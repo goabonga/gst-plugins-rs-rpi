@@ -21,19 +21,34 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install cross-compilation dependencies
+      - name: Setup arm64 cross-compilation sources
         run: |
           sudo dpkg --add-architecture arm64
+          CODENAME=$(lsb_release -cs)
 
-          # Only modify Ubuntu sources, skip third-party lists
-          for f in /etc/apt/sources.list.d/ubuntu*.sources; do
-            if [ -f "$f" ]; then
-              sudo sed -i 's/^Architectures: .*/Architectures: amd64/' "$f" || true
+          # Restrict all existing sources to amd64 only
+          for f in /etc/apt/sources.list.d/*.sources; do
+            [ -f "$f" ] || continue
+            if grep -q "^Architectures:" "$f"; then
+              sudo sed -i 's/^Architectures: .*/Architectures: amd64/' "$f"
+            else
+              sudo sed -i '/^Types:/a Architectures: amd64' "$f"
             fi
           done
+          for f in /etc/apt/sources.list.d/*.list; do
+            [ -f "$f" ] || continue
+            sudo sed -i '/^deb \[/! s/^deb /deb [arch=amd64] /' "$f"
+          done
 
-          echo "deb [arch=arm64] http://ports.ubuntu.com/ $(lsb_release -cs) main restricted universe multiverse" | sudo tee /etc/apt/sources.list.d/arm64.list
-          echo "deb [arch=arm64] http://ports.ubuntu.com/ $(lsb_release -cs)-updates main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list.d/arm64.list
+          # Add arm64 sources pointing to ports.ubuntu.com
+          cat <<EOF | sudo tee /etc/apt/sources.list.d/arm64-ports.list
+          deb [arch=arm64] http://ports.ubuntu.com/ ${CODENAME} main restricted universe multiverse
+          deb [arch=arm64] http://ports.ubuntu.com/ ${CODENAME}-updates main restricted universe multiverse
+          deb [arch=arm64] http://ports.ubuntu.com/ ${CODENAME}-security main restricted universe multiverse
+          EOF
+
+      - name: Install cross-compilation dependencies
+        run: |
           sudo apt-get update
           sudo apt-get install -y \
             gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
