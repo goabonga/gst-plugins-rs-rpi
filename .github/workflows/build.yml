@@ -24,7 +24,14 @@ jobs:
       - name: Install cross-compilation dependencies
         run: |
           sudo dpkg --add-architecture arm64
-          sudo sed -i 's/^deb /deb [arch=amd64] /' /etc/apt/sources.list.d/*.list
+
+          # Only modify Ubuntu sources, skip third-party lists
+          for f in /etc/apt/sources.list.d/ubuntu*.sources; do
+            if [ -f "$f" ]; then
+              sudo sed -i 's/^Architectures: .*/Architectures: amd64/' "$f" || true
+            fi
+          done
+
           echo "deb [arch=arm64] http://ports.ubuntu.com/ $(lsb_release -cs) main restricted universe multiverse" | sudo tee /etc/apt/sources.list.d/arm64.list
           echo "deb [arch=arm64] http://ports.ubuntu.com/ $(lsb_release -cs)-updates main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list.d/arm64.list
           sudo apt-get update
