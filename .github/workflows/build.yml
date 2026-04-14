@@ -11,9 +11,6 @@ on:
     tags:
       - 'v*'
 
-env:
-  GST_PLUGINS_RS_TAG: ${{ github.event.inputs.gst_plugins_rs_tag || 'main' }}
-
 permissions:
   contents: write
 
@@ -23,6 +20,18 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Resolve gst-plugins-rs tag
+        run: |
+          if [ -n "${{ github.event.inputs.gst_plugins_rs_tag }}" ]; then
+            TAG="${{ github.event.inputs.gst_plugins_rs_tag }}"
+          elif [ "${{ github.ref_type }}" = "tag" ]; then
+            TAG="${GITHUB_REF_NAME#v}"
+          else
+            TAG="main"
+          fi
+          echo "GST_PLUGINS_RS_TAG=$TAG" >> $GITHUB_ENV
+          echo "Using gst-plugins-rs tag: $TAG"
 
       - name: Setup arm64 cross-compilation sources
         run: |
