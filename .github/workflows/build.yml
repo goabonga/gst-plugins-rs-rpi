@@ -26,7 +26,7 @@ jobs:
           if [ -n "${{ github.event.inputs.gst_plugins_rs_tag }}" ]; then
             TAG="${{ github.event.inputs.gst_plugins_rs_tag }}"
           elif [ "${{ github.ref_type }}" = "tag" ]; then
-            TAG="${GITHUB_REF_NAME#v}"
+            TAG="gstreamer-${GITHUB_REF_NAME#v}"
           else
             TAG="main"
           fi
