@@ -1,4 +1,4 @@
-name: Build GStreamer RS plugins for RPi
+name: Build GStreamer RS plugins (multi-arch)
 
 on:
   workflow_dispatch:
@@ -17,6 +17,20 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            rust_target: x86_64-unknown-linux-gnu
+            gnu_triplet: x86_64-linux-gnu
+            apt_arch: amd64
+            cross: false
+          - arch: arm64
+            rust_target: aarch64-unknown-linux-gnu
+            gnu_triplet: aarch64-linux-gnu
+            apt_arch: arm64
+            cross: true
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -31,14 +45,18 @@ jobs:
             TAG="main"
           fi
           echo "GST_PLUGINS_RS_TAG=$TAG" >> $GITHUB_ENV
+          # Strip "gstreamer-" prefix for the Debian package version.
+          echo "PKG_VERSION=${TAG#gstreamer-}" >> $GITHUB_ENV
           echo "Using gst-plugins-rs tag: $TAG"
 
-      - name: Setup arm64 cross-compilation sources
+      - name: Setup cross-compilation sources
+        if: matrix.cross
         run: |
-          sudo dpkg --add-architecture arm64
+          sudo dpkg --add-architecture ${{ matrix.apt_arch }}
           CODENAME=$(lsb_release -cs)
 
-          # Restrict all existing sources to amd64 only
+          # Restrict existing sources to amd64 — otherwise apt-get update hits
+          # main archive for the foreign arch, which doesn't serve it.
           for f in /etc/apt/sources.list.d/*.sources; do
             [ -f "$f" ] || continue
             if grep -q "^Architectures:" "$f"; then
@@ -52,72 +70,122 @@ jobs:
             sudo sed -i '/^deb \[/! s/^deb /deb [arch=amd64] /' "$f"
           done
 
-          # Add arm64 sources pointing to ports.ubuntu.com
-          cat <<EOF | sudo tee /etc/apt/sources.list.d/arm64-ports.list
-          deb [arch=arm64] http://ports.ubuntu.com/ ${CODENAME} main restricted universe multiverse
-          deb [arch=arm64] http://ports.ubuntu.com/ ${CODENAME}-updates main restricted universe multiverse
-          deb [arch=arm64] http://ports.ubuntu.com/ ${CODENAME}-security main restricted universe multiverse
+          cat <<EOF | sudo tee /etc/apt/sources.list.d/${{ matrix.apt_arch }}-ports.list
+          deb [arch=${{ matrix.apt_arch }}] http://ports.ubuntu.com/ ${CODENAME} main restricted universe multiverse
+          deb [arch=${{ matrix.apt_arch }}] http://ports.ubuntu.com/ ${CODENAME}-updates main restricted universe multiverse
+          deb [arch=${{ matrix.apt_arch }}] http://ports.ubuntu.com/ ${CODENAME}-security main restricted universe multiverse
           EOF
 
-      - name: Install cross-compilation dependencies
+      - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
-            pkg-config \
-            libgstreamer1.0-dev:arm64 \
-            libgstreamer-plugins-base1.0-dev:arm64 \
-            libgstreamer-plugins-bad1.0-dev:arm64 \
-            libglib2.0-dev:arm64 \
-            libssl-dev:arm64 \
-            libnice-dev:arm64
+          sudo apt-get install -y pkg-config
+          if [ "${{ matrix.cross }}" = "true" ]; then
+            sudo apt-get install -y \
+              gcc-${{ matrix.gnu_triplet }} \
+              g++-${{ matrix.gnu_triplet }} \
+              libgstreamer1.0-dev:${{ matrix.apt_arch }} \
+              libgstreamer-plugins-base1.0-dev:${{ matrix.apt_arch }} \
+              libgstreamer-plugins-bad1.0-dev:${{ matrix.apt_arch }} \
+              libglib2.0-dev:${{ matrix.apt_arch }} \
+              libssl-dev:${{ matrix.apt_arch }} \
+              libsoup-3.0-dev:${{ matrix.apt_arch }} \
+              libnice-dev:${{ matrix.apt_arch }}
+          else
+            sudo apt-get install -y \
+              libgstreamer1.0-dev \
+              libgstreamer-plugins-base1.0-dev \
+              libgstreamer-plugins-bad1.0-dev \
+              libglib2.0-dev \
+              libssl-dev \
+              libsoup-3.0-dev \
+              libnice-dev
+          fi
 
-      - name: Install Rust with aarch64 target
+      - name: Install Rust with target
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-unknown-linux-gnu
+          targets: ${{ matrix.rust_target }}
 
       - name: Clone gst-plugins-rs
         run: |
-          git clone --depth 1 --branch ${{ env.GST_PLUGINS_RS_TAG }} \
+          git clone --depth 1 --branch "$GST_PLUGINS_RS_TAG" \
             https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs.git
 
       - name: Configure cross-compilation environment
+        if: matrix.cross
         run: |
           mkdir -p .cargo
-          cat > .cargo/config.toml << 'TOML'
-          [target.aarch64-unknown-linux-gnu]
-          linker = "aarch64-linux-gnu-gcc"
+          cat > .cargo/config.toml <<TOML
+          [target.${{ matrix.rust_target }}]
+          linker = "${{ matrix.gnu_triplet }}-gcc"
           TOML
-
-          echo "PKG_CONFIG_SYSROOT_DIR=/usr/aarch64-linux-gnu" >> $GITHUB_ENV
-          echo "PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig" >> $GITHUB_ENV
+          echo "PKG_CONFIG_SYSROOT_DIR=/usr/${{ matrix.gnu_triplet }}" >> $GITHUB_ENV
+          echo "PKG_CONFIG_PATH=/usr/lib/${{ matrix.gnu_triplet }}/pkgconfig" >> $GITHUB_ENV
           echo "PKG_CONFIG_ALLOW_CROSS=1" >> $GITHUB_ENV
 
       - name: Build webrtc plugins
         working-directory: gst-plugins-rs
         run: |
-          cargo build --release --target aarch64-unknown-linux-gnu \
+          cargo build --release --target ${{ matrix.rust_target }} \
             -p gst-plugin-webrtc \
             -p gst-plugin-webrtchttp
 
-      - name: Package plugins
+      - name: Package tarball
         run: |
-          INSTALL_DIR="opt/gst-plugins-rs/lib/aarch64-linux-gnu"
+          INSTALL_DIR="opt/gst-plugins-rs/lib/${{ matrix.gnu_triplet }}"
           mkdir -p "$INSTALL_DIR"
-          cp gst-plugins-rs/target/aarch64-unknown-linux-gnu/release/*.so "$INSTALL_DIR/" 2>/dev/null || true
-          tar -czf gst-plugins-rs-rpi.tar.gz opt/
-          ls -lh gst-plugins-rs-rpi.tar.gz
+          cp gst-plugins-rs/target/${{ matrix.rust_target }}/release/*.so "$INSTALL_DIR/"
+          TARBALL="gst-plugins-rs-${{ matrix.arch }}.tar.gz"
+          tar -czf "$TARBALL" opt/
+          echo "TARBALL=$TARBALL" >> $GITHUB_ENV
+          ls -lh "$TARBALL"
 
-      - name: Upload artifact
+      - name: Build .deb
+        run: |
+          PKG="gst-plugins-rs-webrtc"
+          DEB_ROOT="deb-build"
+          rm -rf "$DEB_ROOT"
+          mkdir -p "$DEB_ROOT/DEBIAN" "$DEB_ROOT/usr/lib/${{ matrix.gnu_triplet }}/gstreamer-1.0"
+          cp gst-plugins-rs/target/${{ matrix.rust_target }}/release/*.so \
+             "$DEB_ROOT/usr/lib/${{ matrix.gnu_triplet }}/gstreamer-1.0/"
+
+          INSTALLED_SIZE=$(du -sk "$DEB_ROOT/usr" | cut -f1)
+
+          cat > "$DEB_ROOT/DEBIAN/control" <<EOF
+          Package: $PKG
+          Version: ${PKG_VERSION}
+          Architecture: ${{ matrix.apt_arch }}
+          Maintainer: Chris <goabonga@pm.me>
+          Installed-Size: $INSTALLED_SIZE
+          Depends: libgstreamer1.0-0, libgstreamer-plugins-base1.0-0, libsoup-3.0-0, libnice10
+          Section: libs
+          Priority: optional
+          Homepage: https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs
+          Description: GStreamer Rust WebRTC plugins (webrtcsrc/webrtcsink)
+           Pre-built webrtc elements from the gst-plugins-rs Rust bindings
+           (gst-plugin-webrtc + gst-plugin-webrtchttp). Required by apps that
+           use webrtcsrc / webrtcsink, including cam-relay.
+          EOF
+
+          DEB="${PKG}_${PKG_VERSION}_${{ matrix.apt_arch }}.deb"
+          dpkg-deb --build --root-owner-group "$DEB_ROOT" "$DEB"
+          echo "DEB=$DEB" >> $GITHUB_ENV
+          ls -lh "$DEB"
+
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: gst-plugins-rs-rpi
-          path: gst-plugins-rs-rpi.tar.gz
+          name: gst-plugins-rs-${{ matrix.arch }}
+          path: |
+            ${{ env.TARBALL }}
+            ${{ env.DEB }}
 
       - name: Release
         uses: softprops/action-gh-release@v2
         if: github.ref_type == 'tag'
         with:
-          files: gst-plugins-rs-rpi.tar.gz
+          files: |
+            ${{ env.TARBALL }}
+            ${{ env.DEB }}
           generate_release_notes: true
