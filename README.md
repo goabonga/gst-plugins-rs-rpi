@@ -127,6 +127,18 @@ built from, so upstream `gstreamer-1.28.6` is published as `v1.28.6`.
 - Pushing a `v*` tag or running `release` manually does the same thing for a
   specific version.
 
+A push to `main` runs the pipeline but does **not** publish: a release is tied
+to an upstream version, not to a commit here.
+
+### Re-releasing after a packaging fix
+
+When the packaging is wrong but upstream has not moved, run `release` manually
+with a higher **revision**. Revision `1` is the plain `v1.28.6`; revision `2`
+publishes the same upstream code as `v1.28.6-2`, with `1.28.6-2` as the Debian
+version and `pkgrel=2` on the AUR — the meaning the Debian revision already
+carries. `upstream-watch` compares only the upstream part, so it will not
+mistake `v1.28.6-2` for a version upstream needs to catch up with.
+
 ## Publishing targets
 
 Downstream publishing is optional and gated on configuration; the pipeline
