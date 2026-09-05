@@ -1,0 +1,77 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Chris <goabonga@pm.me>
+
+name: upstream-watch
+
+# Once a day, ask gst-plugins-rs whether it has published a stable release
+# this repository has not built yet, and if so run the release pipeline for
+# it. The release tag is created by the publish job, so a failed build never
+# leaves a tag behind claiming a release that does not exist.
+
+on:
+  schedule:
+    # 04:17 UTC daily -- off the hour to avoid the scheduler's rush minute.
+    - cron: '17 4 * * *'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Rebuild and re-release the newest upstream version even if it is already published'
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: upstream-watch
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: check upstream
+    runs-on: ubuntu-latest
+    outputs:
+      needs_release: ${{ steps.check.outputs.needs_release }}
+      tag: ${{ steps.check.outputs.tag }}
+      upstream_tag: ${{ steps.check.outputs.upstream_tag }}
+      latest: ${{ steps.check.outputs.latest }}
+      current: ${{ steps.check.outputs.current }}
+    steps:
+      - name: Checkout with tags
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Compare with the newest stable upstream release
+        id: check
+        run: |
+          if [ '${{ inputs.force }}' = 'true' ]; then
+            scripts/check-upstream.sh --force
+          else
+            scripts/check-upstream.sh
+          fi
+
+      - name: Summarise
+        run: |
+          {
+            echo "### Upstream check"
+            echo ""
+            echo "| | |"
+            echo "| --- | --- |"
+            echo "| newest stable upstream | \`${{ steps.check.outputs.latest }}\` |"
+            echo "| released here | \`${{ steps.check.outputs.current || 'none' }}\` |"
+            echo "| release triggered | \`${{ steps.check.outputs.needs_release }}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  release:
+    name: release
+    needs: check
+    if: needs.check.outputs.needs_release == 'true'
+    permissions:
+      contents: write
+    uses: ./.github/workflows/release.yml
+    with:
+      upstream_tag: ${{ needs.check.outputs.upstream_tag }}
+      tag: ${{ needs.check.outputs.tag }}
+    secrets: inherit
