@@ -14,6 +14,30 @@
 
 set -euo pipefail
 
+# This script amends HEAD in place. It takes no arguments, and anything passed
+# to it means it was invoked by mistake -- refuse rather than rewrite somebody's
+# commit. It also only ever rewrites a Dependabot commit.
+if [ $# -gt 0 ]; then
+    cat >&2 <<'USAGE'
+rewrite-dependabot-commit.sh takes no arguments: it amends HEAD in place.
+It is meant to be run by `git rebase --exec` in dependabot-rewrite.yml.
+USAGE
+    exit 2
+fi
+
+# Rewrite Dependabot's own commits and nothing else. Skipping rather than
+# failing keeps the workflow green when `synchronize` replays it over a branch
+# this script already rewrote (those commits are re-authored, so they no longer
+# match) -- and stops a re-run from force-pushing a fresh SHA every time.
+author_email=$(git log -1 --pretty=%ae HEAD)
+case "$author_email" in
+    *dependabot*) ;;
+    *)
+        echo "skipping $(git log -1 --pretty=%h HEAD): authored by $author_email, not Dependabot"
+        exit 0
+        ;;
+esac
+
 changed=$(git show --name-only --pretty='' HEAD)
 subject=$(git log -1 --pretty=%s HEAD)
 body=$(git log -1 --pretty=%b HEAD | sed '/^[Cc]o-authored-by:/d')
