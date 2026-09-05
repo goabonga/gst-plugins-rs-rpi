@@ -93,6 +93,27 @@ scripts/build-deb.sh --version 1.28.6 \
 Builds are always native; cross-compiling needs a full foreign-arch sysroot,
 so CI uses one runner per architecture instead.
 
+## The pipeline
+
+Every run — pull request or release — goes through the same stages, in this
+order, defined once in [`pipeline.yml`](.github/workflows/pipeline.yml):
+
+| Stage | What it does |
+| --- | --- |
+| **checks** | `shellcheck`, `actionlint`, SPDX headers |
+| **version** | asks GitLab for the newest stable upstream tag |
+| **metadata** | renders and validates the Debian source package and the from-source PKGBUILD at that version |
+| **build** | compiles both architectures natively, builds the tarball and `.deb`, then installs the `.deb` through `apt` and inspects the elements |
+
+Metadata comes before the build on purpose: a broken control file or PKGBUILD
+fails in about two minutes instead of after a twenty-minute arm64 compile. The
+build stage installs with `apt`, not `dpkg -i`, so it resolves the package's own
+declared dependencies — that is what caught `webrtcbin` missing from `Depends`.
+
+[`release.yml`](.github/workflows/release.yml) runs that same pipeline and then
+adds **github release** followed by **launchpad** and **aur**, so nothing is
+ever published from a tree that would fail CI.
+
 ## Versioning and releases
 
 Versions are not chosen here — a release is named after the upstream tag it was
@@ -101,9 +122,7 @@ built from, so upstream `gstreamer-1.28.6` is published as `v1.28.6`.
 - [`upstream-watch`](.github/workflows/upstream-watch.yml) runs daily, compares
   the newest stable upstream tag (GStreamer's even-minor convention) with the
   newest release here, and calls the release pipeline when upstream moves ahead.
-- [`release`](.github/workflows/release.yml) builds both architectures, checks
-  the packaged plugins load with `gst-inspect-1.0`, and publishes the GitHub
-  release. The tag is created by the publish step, so a failed build never
+- The release tag is created by the publish stage, so a failed build never
   leaves behind a tag for a release that does not exist.
 - Pushing a `v*` tag or running `release` manually does the same thing for a
   specific version.
@@ -136,7 +155,11 @@ packaging/
   deb/        control template for the binary .deb
   launchpad/  Debian source package uploaded to the PPA
   aur/        PKGBUILD templates for both AUR packages
-.github/      CI, release and upstream-watch workflows
+.github/workflows/
+  pipeline.yml        checks -> version -> metadata -> build (reusable)
+  ci.yml              runs the pipeline on pull requests
+  release.yml         runs the pipeline, then publishes
+  upstream-watch.yml  daily upstream check, calls release.yml
 ```
 
 ## Contributing
