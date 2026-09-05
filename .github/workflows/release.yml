@@ -43,6 +43,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       launchpad: ${{ steps.gate.outputs.launchpad }}
+      aur: ${{ steps.gate.outputs.aur }}
     steps:
       - name: Decide which downstream publishers can run
         id: gate
@@ -51,13 +52,21 @@ jobs:
           # made here and exposed as an output the other jobs can gate on.
           LAUNCHPAD_GPG_PRIVATE_KEY: ${{ secrets.LAUNCHPAD_GPG_PRIVATE_KEY }}
           LAUNCHPAD_PPA: ${{ vars.LAUNCHPAD_PPA }}
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
         run: |
           set -euo pipefail
           launchpad=false
           if [ -n "$LAUNCHPAD_GPG_PRIVATE_KEY" ] && [ -n "$LAUNCHPAD_PPA" ]; then
             launchpad=true
           fi
-          echo "launchpad=$launchpad" >> "$GITHUB_OUTPUT"
+          aur=false
+          if [ -n "$AUR_SSH_PRIVATE_KEY" ]; then
+            aur=true
+          fi
+          {
+            echo "launchpad=$launchpad"
+            echo "aur=$aur"
+          } >> "$GITHUB_OUTPUT"
 
           {
             echo "### Downstream publishing"
@@ -65,6 +74,7 @@ jobs:
             echo "| Target | Enabled | Requires |"
             echo "| --- | --- | --- |"
             echo "| Launchpad PPA | \`$launchpad\` | \`LAUNCHPAD_GPG_PRIVATE_KEY\` secret + \`LAUNCHPAD_PPA\` variable |"
+            echo "| AUR | \`$aur\` | \`AUR_SSH_PRIVATE_KEY\` secret |"
           } >> "$GITHUB_STEP_SUMMARY"
 
   prepare:
@@ -281,4 +291,59 @@ jobs:
             echo "Uploaded \`gst-plugins-rs-webrtc ${{ needs.prepare.outputs.version }}\` to \`${{ vars.LAUNCHPAD_PPA }}\`."
             echo ""
             echo "Launchpad emails the build result; packages appear once its builders finish."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  aur:
+    name: aur
+    needs: [prepare, build, publish, gate]
+    if: needs.gate.outputs.aur == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        package:
+          - gst-plugins-rs-webrtc
+          - gst-plugins-rs-webrtc-bin
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: packages-*
+          merge-multiple: true
+          path: dist
+
+      - name: Configure the AUR SSH key
+        env:
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.ssh"
+          chmod 700 "$HOME/.ssh"
+          printf '%s\n' "$AUR_SSH_PRIVATE_KEY" > "$HOME/.ssh/aur"
+          chmod 600 "$HOME/.ssh/aur"
+
+      - name: Render and push the package
+        run: |
+          set -euo pipefail
+          # makepkg is the only supported .SRCINFO generator and it refuses to
+          # run as root, so publishing happens as an unprivileged user inside
+          # an Arch container.
+          docker run --rm \
+            -v "$PWD:/work" \
+            -v "$HOME/.ssh:/ssh:ro" \
+            -w /work \
+            -e "PACKAGE=${{ matrix.package }}" \
+            -e "VERSION=${{ needs.prepare.outputs.version }}" \
+            archlinux:base-devel \
+            scripts/aur-container-entrypoint.sh
+
+      - name: Summarise
+        run: |
+          {
+            echo "### AUR"
+            echo ""
+            echo "Pushed \`${{ matrix.package }} ${{ needs.prepare.outputs.version }}\` to <https://aur.archlinux.org/packages/${{ matrix.package }}>."
           } >> "$GITHUB_STEP_SUMMARY"
