@@ -1,0 +1,18 @@
+Package: @PACKAGE@
+Version: @DEB_VERSION@
+Architecture: @DEB_ARCH@
+Maintainer: Chris <goabonga@pm.me>
+Installed-Size: @INSTALLED_SIZE@
+Depends: libgstreamer1.0-0, libgstreamer-plugins-base1.0-0, libsoup-3.0-0, libnice10, libssl3 | libssl3t64
+Section: libs
+Priority: optional
+Homepage: https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs
+Description: GStreamer Rust WebRTC plugins (webrtcsrc/webrtcsink)
+ Pre-built WebRTC elements from the gst-plugins-rs Rust bindings
+ (gst-plugin-webrtc and gst-plugin-webrtchttp): webrtcsrc, webrtcsink,
+ whipsink, whepsrc and the associated signallers.
+ .
+ The plugins install into the GStreamer multi-arch plugin directory and are
+ discovered automatically -- no GST_PLUGIN_PATH needed.
+ .
+ Built from upstream tag gstreamer-@UPSTREAM_VERSION@.
