@@ -10,7 +10,9 @@ pkgdesc='GStreamer WebRTC elements from gst-plugins-rs (webrtcsrc, webrtcsink, w
 arch=('x86_64' 'aarch64')
 url='https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs'
 license=('MPL-2.0')
-depends=('gstreamer' 'gst-plugins-base-libs' 'gst-plugins-bad-libs' 'glib2' 'libsoup3' 'libnice' 'openssl')
+# gst-plugins-bad (not just -libs) provides the webrtcbin element the
+# plugins instantiate at runtime; libnice ships the ICE plugin on Arch.
+depends=('gstreamer' 'gst-plugins-base-libs' 'gst-plugins-bad' 'gst-plugins-bad-libs' 'glib2' 'libsoup3' 'libnice' 'openssl')
 # Upstream's .cargo/config.toml sets git-fetch-with-cli, and the workspace
 # pulls some gtk-rs crates straight from git, so git is a real build dep.
 # pkgconf comes from base-devel and is intentionally not listed.

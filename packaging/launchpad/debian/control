@@ -14,7 +14,14 @@ Package: gst-plugins-rs-webrtc
 Architecture: amd64 arm64
 Depends:
  ${shlibs:Depends},
- ${misc:Depends}
+ ${misc:Depends},
+# webrtcsink and whipsink instantiate webrtcbin, which ships in the
+# plugins-bad *plugin* package -- shlibs:Depends only sees the libraries the
+# .so links against, so this one has to be declared by hand.
+ gstreamer1.0-plugins-bad
+Recommends:
+# webrtcbin needs libnice's GStreamer plugin for ICE.
+ gstreamer1.0-nice
 Description: GStreamer Rust WebRTC plugins (webrtcsrc/webrtcsink)
  Pre-built WebRTC elements from the gst-plugins-rs Rust bindings
  (gst-plugin-webrtc and gst-plugin-webrtchttp): webrtcsrc, webrtcsink,

@@ -10,7 +10,9 @@ pkgdesc='GStreamer WebRTC elements from gst-plugins-rs (prebuilt binaries)'
 arch=('x86_64' 'aarch64')
 url='https://github.com/goabonga/gst-plugins-rs-rpi'
 license=('MPL-2.0')
-depends=('gstreamer' 'gst-plugins-base-libs' 'gst-plugins-bad-libs' 'glib2' 'libsoup3' 'libnice' 'openssl')
+# gst-plugins-bad (not just -libs) provides the webrtcbin element the
+# plugins instantiate at runtime; libnice ships the ICE plugin on Arch.
+depends=('gstreamer' 'gst-plugins-base-libs' 'gst-plugins-bad' 'gst-plugins-bad-libs' 'glib2' 'libsoup3' 'libnice' 'openssl')
 provides=("gst-plugins-rs-webrtc=$pkgver" 'gst-plugin-webrtc' 'gst-plugin-webrtchttp')
 conflicts=('gst-plugins-rs-webrtc')
 _url_base="https://github.com/goabonga/gst-plugins-rs-rpi/releases/download/v$pkgver"

@@ -179,9 +179,14 @@ jobs:
 
       - name: Verify the plugins load
         run: |
-          sudo apt-get install -y --no-install-recommends \
-            gstreamer1.0-tools gstreamer1.0-plugins-base
-          sudo dpkg -i dist/*.deb
+          set -euo pipefail
+          sudo apt-get install -y --no-install-recommends gstreamer1.0-tools
+          # Install through apt, not dpkg -i, so the package's own Depends and
+          # Recommends are resolved: this is what a user runs, and it proves
+          # the declared dependencies are both correct and installable.
+          sudo apt-get install -y ./dist/*.deb
+          # whipsink instantiates webrtcbin while being inspected, so this
+          # aborts outright if gstreamer1.0-plugins-bad is not pulled in.
           gst-inspect-1.0 webrtcsink
           gst-inspect-1.0 whipsink
 
