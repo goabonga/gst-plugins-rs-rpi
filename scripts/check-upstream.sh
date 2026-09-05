@@ -49,6 +49,9 @@ if [ "$CURRENT_SET" -eq 0 ]; then
     CURRENT=$(git tag --list 'v*' | sed 's/^v//' | sort -V | tail -n1)
 fi
 CURRENT="${CURRENT#v}"
+# A packaging-only release is tagged v<version>-<revision>; only the upstream
+# version takes part in the comparison.
+CURRENT="${CURRENT%%-*}"
 
 # `gstreamer-1.28.6` -> `1.28.6`, stable minors only, highest version wins.
 LATEST=$(

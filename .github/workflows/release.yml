@@ -26,6 +26,10 @@ on:
         description: 'Upstream tag to build (e.g. gstreamer-1.28.6); empty = newest stable'
         required: false
         default: ''
+      revision:
+        description: 'Packaging revision: bump to re-release the same upstream version with fixed packaging'
+        required: false
+        default: '1'
   workflow_call:
     inputs:
       upstream_tag:
@@ -36,6 +40,11 @@ on:
         description: 'Release tag to publish (e.g. v1.28.6)'
         type: string
         required: true
+      revision:
+        description: 'Packaging revision'
+        type: string
+        required: false
+        default: '1'
 
 permissions:
   contents: read
@@ -51,6 +60,7 @@ jobs:
     with:
       upstream_tag: ${{ inputs.upstream_tag }}
       tag: ${{ inputs.tag }}
+      revision: ${{ inputs.revision || '1' }}
 
   gate:
     name: publishing targets
@@ -122,8 +132,8 @@ jobs:
 
             | Artifact | Target |
             | --- | --- |
-            | `gst-plugins-rs-webrtc_${{ needs.pipeline.outputs.version }}-1_amd64.deb` | Debian/Ubuntu x86-64 |
-            | `gst-plugins-rs-webrtc_${{ needs.pipeline.outputs.version }}-1_arm64.deb` | Debian/Ubuntu arm64 (Raspberry Pi 64-bit) |
+            | `gst-plugins-rs-webrtc_${{ needs.pipeline.outputs.version }}-${{ needs.pipeline.outputs.revision }}_amd64.deb` | Debian/Ubuntu x86-64 |
+            | `gst-plugins-rs-webrtc_${{ needs.pipeline.outputs.version }}-${{ needs.pipeline.outputs.revision }}_arm64.deb` | Debian/Ubuntu arm64 (Raspberry Pi 64-bit) |
             | `gst-plugins-rs-webrtc-${{ needs.pipeline.outputs.version }}-<arch>.tar.gz` | any distribution |
 
             `SHA256SUMS` covers every asset.
@@ -179,6 +189,7 @@ jobs:
         run: |
           scripts/publish-launchpad.sh \
             --version '${{ needs.pipeline.outputs.version }}' \
+            --revision '${{ needs.pipeline.outputs.revision }}' \
             --ppa "$LAUNCHPAD_PPA" \
             --series "${LAUNCHPAD_SERIES:-noble}"
 
@@ -237,7 +248,7 @@ jobs:
             -e "PACKAGE=${{ matrix.package }}" \
             -e "VERSION=${{ needs.pipeline.outputs.version }}" \
             archlinux:base-devel \
-            scripts/aur-container-entrypoint.sh
+            scripts/aur-container-entrypoint.sh --pkgrel '${{ needs.pipeline.outputs.revision }}'
 
       - name: Summarise
         run: |

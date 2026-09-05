@@ -30,6 +30,11 @@ on:
         type: string
         required: false
         default: ''
+      revision:
+        description: 'Packaging revision, bumped to re-release the same upstream version'
+        type: string
+        required: false
+        default: '1'
     outputs:
       version:
         description: 'Upstream version being built, e.g. 1.28.6'
@@ -40,6 +45,9 @@ on:
       upstream_tag:
         description: 'Upstream tag being built, e.g. gstreamer-1.28.6'
         value: ${{ jobs.version.outputs.upstream_tag }}
+      revision:
+        description: 'Packaging revision of this build'
+        value: ${{ jobs.version.outputs.revision }}
 
 permissions:
   contents: read
@@ -78,6 +86,7 @@ jobs:
       version: ${{ steps.resolve.outputs.version }}
       tag: ${{ steps.resolve.outputs.tag }}
       upstream_tag: ${{ steps.resolve.outputs.upstream_tag }}
+      revision: ${{ steps.resolve.outputs.revision }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -92,6 +101,7 @@ jobs:
         env:
           INPUT_UPSTREAM_TAG: ${{ inputs.upstream_tag }}
           INPUT_TAG: ${{ inputs.tag }}
+          INPUT_REVISION: ${{ inputs.revision }}
           NEWEST_UPSTREAM_TAG: ${{ steps.upstream.outputs.upstream_tag }}
         run: |
           set -euo pipefail
@@ -110,12 +120,24 @@ jobs:
           fi
 
           version="${upstream_tag#gstreamer-}"
-          [ -n "$tag" ] || tag="v$version"
+          revision="${INPUT_REVISION:-1}"
+
+          # Revision 1 is the plain upstream version, so tags stay v1.28.6.
+          # Bumping it re-releases the same upstream code with fixed packaging,
+          # as v1.28.6-2 -- the same meaning the Debian revision already has.
+          if [ -z "$tag" ]; then
+            if [ "$revision" = '1' ]; then
+              tag="v$version"
+            else
+              tag="v$version-$revision"
+            fi
+          fi
 
           {
             echo "version=$version"
             echo "tag=$tag"
             echo "upstream_tag=$upstream_tag"
+            echo "revision=$revision"
           } >> "$GITHUB_OUTPUT"
 
           {
@@ -125,6 +147,7 @@ jobs:
             echo "| --- | --- |"
             echo "| upstream tag | \`$upstream_tag\` |"
             echo "| version | \`$version\` |"
+            echo "| packaging revision | \`$revision\` |"
             echo "| release tag | \`$tag\` |"
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -154,7 +177,10 @@ jobs:
           for arch in amd64 arm64; do
             tar -czf "dist/gst-plugins-rs-webrtc-$version-$arch.tar.gz" -C stub lib
           done
-          scripts/build-source-package.sh --version "$version" --series noble --with-orig
+          scripts/build-source-package.sh \
+            --version "$version" \
+            --revision '${{ needs.version.outputs.revision }}' \
+            --series noble --with-orig
 
       - name: Lint the source package (informational)
         continue-on-error: true
@@ -234,6 +260,7 @@ jobs:
         run: |
           scripts/build-deb.sh \
             --version '${{ needs.version.outputs.version }}' \
+            --revision '${{ needs.version.outputs.revision }}' \
             --tarball "dist/gst-plugins-rs-webrtc-${{ needs.version.outputs.version }}-${{ matrix.arch }}.tar.gz"
 
       - name: Verify the plugins load
