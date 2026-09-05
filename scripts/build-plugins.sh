@@ -6,13 +6,20 @@
 # Build the selected gst-plugins-rs plugins from an upstream tag and lay the
 # resulting shared objects out as a relocatable tarball:
 #
-#   <outdir>/gst-plugins-rs-webrtc-<version>-<debarch>.tar.gz
+#   <outdir>/gst-plugins-rs-webrtc-<version>-<codename>-<debarch>.tar.gz
 #     lib/gstreamer-1.0/*.so
 #
 # The build is always native: cross-compiling GStreamer's Rust bindings needs
 # a full foreign-arch sysroot, which is what every earlier iteration of this
 # pipeline kept tripping over. CI runs this on a native runner per
 # architecture instead.
+#
+# It is also run once per target distribution release, inside a container of
+# that release. gst-plugin-webrtc enables the gstreamer-rs "v1_22" features
+# unconditionally, so it needs GStreamer >= 1.22, and it compiles against
+# whatever headers it finds: a binary built on trixie (1.26) can call symbols
+# absent from bookworm (1.22). The codename is part of the artifact name so
+# the two never get mixed up.
 
 set -euo pipefail
 
@@ -21,10 +28,11 @@ PLUGINS="${PLUGINS:-gst-plugin-webrtc gst-plugin-webrtchttp}"
 
 usage() {
     cat <<'USAGE'
-Usage: build-plugins.sh --upstream-tag <tag> [options]
+Usage: build-plugins.sh --upstream-tag <tag> --codename <codename> [options]
 
 Options:
   --upstream-tag <tag>   Upstream git tag or branch (e.g. gstreamer-1.28.6).
+  --codename <codename>  Distribution release built for, e.g. trixie.
   --version <version>    Package version (default: tag minus "gstreamer-").
   --workdir <dir>        Scratch directory for the checkout (default: build).
   --outdir <dir>         Where to write the tarball (default: dist).
@@ -37,6 +45,7 @@ USAGE
 }
 
 UPSTREAM_TAG=""
+CODENAME=""
 VERSION=""
 WORKDIR="build"
 OUTDIR="dist"
@@ -44,6 +53,7 @@ OUTDIR="dist"
 while [ $# -gt 0 ]; do
     case "$1" in
         --upstream-tag) UPSTREAM_TAG="$2"; shift 2 ;;
+        --codename) CODENAME="$2"; shift 2 ;;
         --version) VERSION="$2"; shift 2 ;;
         --workdir) WORKDIR="$2"; shift 2 ;;
         --outdir) OUTDIR="$2"; shift 2 ;;
@@ -52,8 +62,8 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-if [ -z "$UPSTREAM_TAG" ]; then
-    echo "error: --upstream-tag is required" >&2
+if [ -z "$UPSTREAM_TAG" ] || [ -z "$CODENAME" ]; then
+    echo "error: --upstream-tag and --codename are required" >&2
     usage >&2
     exit 2
 fi
@@ -76,6 +86,7 @@ SRCDIR="$WORKDIR/gst-plugins-rs"
 
 echo "==> upstream tag : $UPSTREAM_TAG"
 echo "==> version      : $VERSION"
+echo "==> release      : $CODENAME"
 echo "==> architecture : $DEB_ARCH ($GNU_TRIPLET)"
 echo "==> plugins      : $PLUGINS"
 
@@ -104,7 +115,7 @@ fi
 cp "${sofiles[@]}" "$STAGE/lib/gstreamer-1.0/"
 strip --strip-unneeded "$STAGE"/lib/gstreamer-1.0/*.so
 
-TARBALL="$OUTDIR/gst-plugins-rs-webrtc-${VERSION}-${DEB_ARCH}.tar.gz"
+TARBALL="$OUTDIR/gst-plugins-rs-webrtc-${VERSION}-${CODENAME}-${DEB_ARCH}.tar.gz"
 tar -czf "$TARBALL" -C "$STAGE" lib
 
 echo "==> built:"
@@ -117,6 +128,7 @@ ls -lh "$TARBALL"
 if [ -n "${GITHUB_ENV:-}" ]; then
     {
         echo "PKG_VERSION=$VERSION"
+        echo "CODENAME=$CODENAME"
         echo "DEB_ARCH=$DEB_ARCH"
         echo "GNU_TRIPLET=$GNU_TRIPLET"
         echo "TARBALL=$TARBALL"

@@ -13,6 +13,9 @@
 set -euo pipefail
 
 AUR_HOST="${AUR_HOST:-aur@aur.archlinux.org}"
+# Which of the per-release builds feeds the -bin package. Arch ships GStreamer
+# 1.28, so the newest target release is the closest match.
+AUR_BIN_CODENAME="${AUR_BIN_CODENAME:-resolute}"
 
 usage() {
     cat <<'USAGE'
@@ -29,6 +32,8 @@ Options:
 
 Environment:
   AUR_HOST             SSH destination of the AUR (default: aur@aur.archlinux.org).
+  AUR_BIN_CODENAME     Which per-release build the -bin package ships
+                       (default: resolute).
 USAGE
 }
 
@@ -87,17 +92,18 @@ rm -rf "$STAGE"
 mkdir -p "$STAGE"
 
 # Only resolve the checksums the template actually asks for.
-render=(sed -e "s|@VERSION@|$VERSION|g" -e "s|@PKGREL@|$PKGREL|g")
+render=(sed -e "s|@VERSION@|$VERSION|g" -e "s|@PKGREL@|$PKGREL|g" \
+             -e "s|@CODENAME@|$AUR_BIN_CODENAME|g")
 
 if grep -q '@SHA256_SRC@' "$TEMPLATE"; then
     src_url="https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs/-/archive/gstreamer-${VERSION}/gst-plugins-rs-gstreamer-${VERSION}.tar.gz"
     render+=(-e "s|@SHA256_SRC@|$(sha256_of_url "$src_url")|g")
 fi
 if grep -q '@SHA256_AMD64@' "$TEMPLATE"; then
-    render+=(-e "s|@SHA256_AMD64@|$(sha256_of_file "$ARTIFACTS/gst-plugins-rs-webrtc-${VERSION}-amd64.tar.gz")|g")
+    render+=(-e "s|@SHA256_AMD64@|$(sha256_of_file "$ARTIFACTS/gst-plugins-rs-webrtc-${VERSION}-${AUR_BIN_CODENAME}-amd64.tar.gz")|g")
 fi
 if grep -q '@SHA256_ARM64@' "$TEMPLATE"; then
-    render+=(-e "s|@SHA256_ARM64@|$(sha256_of_file "$ARTIFACTS/gst-plugins-rs-webrtc-${VERSION}-arm64.tar.gz")|g")
+    render+=(-e "s|@SHA256_ARM64@|$(sha256_of_file "$ARTIFACTS/gst-plugins-rs-webrtc-${VERSION}-${AUR_BIN_CODENAME}-arm64.tar.gz")|g")
 fi
 
 "${render[@]}" "$TEMPLATE" > "$STAGE/PKGBUILD"

@@ -21,13 +21,19 @@ The `.so` files installed by this package are byte-identical to the ones in
 `gst-plugins-rs-webrtc-<version>-<arch>.tar.gz` of the matching release, and
 the workflow that produced them is public:
 
-    https://github.com/goabonga/gst-plugins-rs-rpi/actions/workflows/release.yml
+    https://github.com/goabonga/gst-plugins-rs-rpi/actions/workflows/pipeline.yml
 
 Series support
 --------------
 
-Packages are built for the Ubuntu series whose libraries the plugins were
-linked against (noble, matching the GitHub Actions runners). Installing them
-on an older series will fail on library symbol versions.
+A separate package is built for every supported distribution release, in a
+container of that release, so its dependencies are resolved by dpkg-shlibdeps
+against that release's own packages and the plugins are compiled against its
+GStreamer headers. The release is in the version: 1.28.6-1~trixie1.
+
+gst-plugin-webrtc enables the gstreamer-rs "v1_22" feature set
+unconditionally, so a release must ship GStreamer 1.22 or newer. That rules out
+Ubuntu 22.04 (1.20). Supported: Debian 12 (1.22), Debian 13 (1.26),
+Ubuntu 24.04 (1.24), Ubuntu 26.04 (1.28).
 
  -- Chris <goabonga@pm.me>

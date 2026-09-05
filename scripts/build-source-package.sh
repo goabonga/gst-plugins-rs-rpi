@@ -7,20 +7,21 @@
 #
 # Upstream declares rust-version = 1.92 and the newest rustc in the Ubuntu
 # archive is 1.75, so Launchpad cannot compile the plugins. The source package
-# therefore repacks the shared objects built by the release pipeline:
+# repacks the shared objects the pipeline built in a container of the same
+# release being uploaded for:
 #
 #   gst-plugins-rs-webrtc_<version>.orig.tar.xz
-#     binaries/amd64/lib/gstreamer-1.0/*.so
-#     binaries/arm64/lib/gstreamer-1.0/*.so
+#     binaries/<arch>/lib/gstreamer-1.0/*.so
 #     LICENSE
 #
-# and debian/rules installs the set matching the build architecture. See
-# packaging/launchpad/debian/README.Debian for the full rationale.
+# See packaging/debian/README.Debian for the full rationale.
 
 set -euo pipefail
 
-PACKAGE="${PACKAGE:-gst-plugins-rs-webrtc}"
-DEBIAN_TEMPLATE="${DEBIAN_TEMPLATE:-packaging/launchpad/debian}"
+# shellcheck source=scripts/lib/debian-tree.sh
+. "$(dirname "$0")/lib/debian-tree.sh"
+
+PACKAGE="gst-plugins-rs-webrtc"
 ARCHES="${ARCHES:-amd64 arm64}"
 
 usage() {
@@ -29,22 +30,22 @@ Usage: build-source-package.sh --version <version> --series <series> [options]
 
 Options:
   --version <version>   Upstream version, e.g. 1.28.6.
-  --series <series>     Ubuntu series to target, e.g. noble.
-  --revision <n>        Debian revision (default: 1).
-  --artifacts <dir>     Directory holding the release tarballs (default: dist).
+  --series <series>     Ubuntu series to target, e.g. noble. The binaries must
+                        have been built for that same series.
+  --revision <n>        Packaging revision (default: 1).
+  --artifacts <dir>     Directory holding the tarballs (default: dist).
   --workdir <dir>       Scratch directory (default: build).
   --key <keyid>         GPG key to sign with (default: unsigned).
   --with-orig           Include the orig tarball in the .changes (-sa).
                         Launchpad accepts it once per version; use it for the
                         first series of a release only.
   --metadata-only       Render debian/ and stop, without building a source
-                        package. Used by CI to validate the packaging.
+                        package.
   -h, --help            Show this help.
 
 Environment:
-  PACKAGE               Source package name.
-  DEBIAN_TEMPLATE       Directory holding the debian/ template.
   ARCHES                Architectures to pull out of --artifacts.
+  DEBIAN_TEMPLATE       debian/ template directory (default: packaging/debian).
 USAGE
 }
 
@@ -78,10 +79,6 @@ if [ -z "$VERSION" ] || [ -z "$SERIES" ]; then
     exit 2
 fi
 
-# `~<series>N` keeps the same upstream version orderable across series and
-# below any later official package.
-DEB_VERSION="${VERSION}-${REVISION}~${SERIES}1"
-
 OUTDIR="$WORKDIR/source/$SERIES"
 SRCDIR="$OUTDIR/${PACKAGE}-${VERSION}"
 
@@ -90,13 +87,8 @@ mkdir -p "$SRCDIR"
 
 if [ "$METADATA_ONLY" -eq 0 ]; then
     for arch in $ARCHES; do
-        tarball="$ARTIFACTS/${PACKAGE}-${VERSION}-${arch}.tar.gz"
-        if [ ! -f "$tarball" ]; then
-            echo "error: missing artifact for $arch: $tarball" >&2
-            exit 1
-        fi
-        mkdir -p "$SRCDIR/binaries/$arch"
-        tar -xzf "$tarball" -C "$SRCDIR/binaries/$arch" lib/gstreamer-1.0
+        unpack_binaries "$SRCDIR" "$arch" \
+            "$ARTIFACTS/${PACKAGE}-${VERSION}-${SERIES}-${arch}.tar.gz"
     done
     install -m 0644 LICENSE "$SRCDIR/LICENSE"
 
@@ -105,17 +97,7 @@ if [ "$METADATA_ONLY" -eq 0 ]; then
     echo "==> orig tarball: $ORIG"
 fi
 
-cp -r "$DEBIAN_TEMPLATE" "$SRCDIR/debian"
-chmod +x "$SRCDIR/debian/rules"
-
-cat > "$SRCDIR/debian/changelog" <<CHANGELOG
-${PACKAGE} (${DEB_VERSION}) ${SERIES}; urgency=medium
-
-  * Repack of the GStreamer Rust WebRTC plugins built from upstream tag
-    gstreamer-${VERSION} by the gst-plugins-rs-rpi release pipeline.
-
- -- Chris <goabonga@pm.me>  $(date -R)
-CHANGELOG
+render_debian_tree "$SRCDIR" "$VERSION" "$REVISION" "$SERIES"
 
 echo "==> debian/ rendered in $SRCDIR"
 dpkg-parsechangelog -l "$SRCDIR/debian/changelog"

@@ -3,116 +3,89 @@
 
 name: pipeline
 
-# The build pipeline, in the order the work actually depends on:
+# The one pipeline: cron, or run by hand with the tag to build.
 #
-#   checks -> version -> metadata -> build
+#   version -> checks -> build (arch x release) -> aur metadata
+#                                               -> github release
+#                                               -> launchpad, aur
 #
-#   checks    static gates that need nothing external (lint, SPDX headers)
-#   version   ask GitLab which stable upstream release is the newest
-#   metadata  render and validate the packaging metadata for that version,
-#             so a broken control file or PKGBUILD fails in two minutes
-#             instead of after a twenty-minute arm64 compile
-#   build     compile the plugins, package them, prove they load
+# Every stage waits for the one before it; the matrices fan out inside a stage.
 #
-# Reusable so that pull requests and releases run exactly the same pipeline;
-# release.yml adds the publishing stages after it.
+# There is deliberately no pull-request trigger: pushes are not validated, and
+# a lint or packaging mistake surfaces at the next cron run or manual dispatch.
 
 on:
-  workflow_call:
+  schedule:
+    # 04:17 UTC daily -- off the hour to avoid the scheduler's rush minute.
+    - cron: '17 4 * * *'
+  workflow_dispatch:
     inputs:
       upstream_tag:
         description: 'Upstream tag to build (e.g. gstreamer-1.28.6); empty = newest stable'
-        type: string
-        required: false
-        default: ''
-      tag:
-        description: 'Release tag this build belongs to (e.g. v1.28.6); empty = derived'
-        type: string
         required: false
         default: ''
       revision:
-        description: 'Packaging revision, bumped to re-release the same upstream version'
-        type: string
+        description: 'Packaging revision: bump to re-release the same upstream version'
         required: false
         default: '1'
-    outputs:
-      version:
-        description: 'Upstream version being built, e.g. 1.28.6'
-        value: ${{ jobs.version.outputs.version }}
-      tag:
-        description: 'Release tag for this version, e.g. v1.28.6'
-        value: ${{ jobs.version.outputs.tag }}
-      upstream_tag:
-        description: 'Upstream tag being built, e.g. gstreamer-1.28.6'
-        value: ${{ jobs.version.outputs.upstream_tag }}
-      revision:
-        description: 'Packaging revision of this build'
-        value: ${{ jobs.version.outputs.revision }}
+      force:
+        description: 'Build even when this version is already released'
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
 
+concurrency:
+  group: pipeline
+  cancel-in-progress: false
+
 jobs:
-  lint:
-    name: lint
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Lint shell scripts
-        run: shellcheck scripts/*.sh
-
-      - name: Lint workflows
-        uses: docker://rhysd/actionlint:1.7.7
-        with:
-          args: -color
-
-  license-headers:
-    name: license headers
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Check SPDX headers
-        run: python3 scripts/add_license_header.py --path . --types sh,yml,yaml,py --check
-
   version:
-    name: resolve version
-    needs: [lint, license-headers]
+    name: version
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.resolve.outputs.version }}
       tag: ${{ steps.resolve.outputs.tag }}
       upstream_tag: ${{ steps.resolve.outputs.upstream_tag }}
       revision: ${{ steps.resolve.outputs.revision }}
+      proceed: ${{ steps.resolve.outputs.proceed }}
     steps:
-      - name: Checkout
+      - name: Checkout with tags
         uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - name: Ask GitLab for the newest stable upstream release
         id: upstream
-        if: inputs.upstream_tag == '' && github.ref_type != 'tag'
-        run: scripts/check-upstream.sh --current ''
+        if: inputs.upstream_tag == ''
+        run: |
+          if [ '${{ inputs.force }}' = 'true' ]; then
+            scripts/check-upstream.sh --force
+          else
+            scripts/check-upstream.sh
+          fi
 
-      - name: Resolve the version to build
+      - name: Resolve what to build
         id: resolve
         env:
           INPUT_UPSTREAM_TAG: ${{ inputs.upstream_tag }}
-          INPUT_TAG: ${{ inputs.tag }}
           INPUT_REVISION: ${{ inputs.revision }}
           NEWEST_UPSTREAM_TAG: ${{ steps.upstream.outputs.upstream_tag }}
+          NEEDS_RELEASE: ${{ steps.upstream.outputs.needs_release }}
         run: |
           set -euo pipefail
           upstream_tag="$INPUT_UPSTREAM_TAG"
-          tag="$INPUT_TAG"
+          revision="${INPUT_REVISION:-1}"
 
-          if [ -z "$upstream_tag" ] && [ "$GITHUB_REF_TYPE" = 'tag' ]; then
-            tag="$GITHUB_REF_NAME"
-            upstream_tag="gstreamer-${tag#v}"
+          if [ -n "$upstream_tag" ]; then
+            # An explicit tag is an explicit instruction: always build it.
+            proceed=true
+          else
+            upstream_tag="$NEWEST_UPSTREAM_TAG"
+            proceed="${NEEDS_RELEASE:-false}"
           fi
-          [ -n "$upstream_tag" ] || upstream_tag="$NEWEST_UPSTREAM_TAG"
 
           if [ -z "$upstream_tag" ]; then
             echo "error: could not resolve an upstream tag to build" >&2
@@ -120,17 +93,12 @@ jobs:
           fi
 
           version="${upstream_tag#gstreamer-}"
-          revision="${INPUT_REVISION:-1}"
-
           # Revision 1 is the plain upstream version, so tags stay v1.28.6.
-          # Bumping it re-releases the same upstream code with fixed packaging,
-          # as v1.28.6-2 -- the same meaning the Debian revision already has.
-          if [ -z "$tag" ]; then
-            if [ "$revision" = '1' ]; then
-              tag="v$version"
-            else
-              tag="v$version-$revision"
-            fi
+          # Bumping it re-releases the same upstream code with fixed packaging.
+          if [ "$revision" = '1' ]; then
+            tag="v$version"
+          else
+            tag="v$version-$revision"
           fi
 
           {
@@ -138,6 +106,7 @@ jobs:
             echo "tag=$tag"
             echo "upstream_tag=$upstream_tag"
             echo "revision=$revision"
+            echo "proceed=$proceed"
           } >> "$GITHUB_OUTPUT"
 
           {
@@ -146,99 +115,82 @@ jobs:
             echo "| | |"
             echo "| --- | --- |"
             echo "| upstream tag | \`$upstream_tag\` |"
-            echo "| version | \`$version\` |"
-            echo "| packaging revision | \`$revision\` |"
             echo "| release tag | \`$tag\` |"
+            echo "| packaging revision | \`$revision\` |"
+            echo "| building | \`$proceed\` |"
           } >> "$GITHUB_STEP_SUMMARY"
 
-  metadata:
-    name: packaging metadata
+  checks:
+    name: checks
     needs: version
+    if: needs.version.outputs.proceed == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Install packaging tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            debhelper devscripts dpkg-dev lintian
+      - name: Lint shell scripts
+        run: shellcheck -x scripts/*.sh scripts/lib/*.sh
 
-      - name: Build the Debian source package
-        run: |
-          set -euo pipefail
-          # The real .so come from the build stage, which has not run yet; the
-          # source package only lays them out, so placeholders exercise every
-          # packaging step at the version actually being released.
-          version='${{ needs.version.outputs.version }}'
-          mkdir -p stub/lib/gstreamer-1.0 dist
-          : > stub/lib/gstreamer-1.0/libgstrswebrtc.so
-          for arch in amd64 arm64; do
-            tar -czf "dist/gst-plugins-rs-webrtc-$version-$arch.tar.gz" -C stub lib
-          done
-          scripts/build-source-package.sh \
-            --version "$version" \
-            --revision '${{ needs.version.outputs.revision }}' \
-            --series noble --with-orig
-
-      - name: Lint the source package (informational)
-        continue-on-error: true
-        run: lintian build/source/noble/*.dsc
-
-      - name: Render the source AUR package
-        run: |
-          set -euo pipefail
-          # Only the from-source PKGBUILD can be rendered here: its checksum is
-          # of the upstream tarball. The -bin one checksums artifacts this
-          # pipeline has not built yet, so the aur job renders that one.
-          docker run --rm \
-            -v "$PWD:/work" \
-            -w /work \
-            -e 'PACKAGE=gst-plugins-rs-webrtc' \
-            -e 'VERSION=${{ needs.version.outputs.version }}' \
-            archlinux:base-devel \
-            scripts/aur-container-entrypoint.sh --dry-run
-
-      - name: Check the binary package control template
-        run: |
-          grep -q '^Package: @PACKAGE@$' packaging/deb/control.in
-
-      - name: Upload the rendered metadata
-        uses: actions/upload-artifact@v7
+      - name: Lint workflows
+        uses: docker://rhysd/actionlint:1.7.7
         with:
-          name: packaging-metadata
-          path: |
-            build/source/noble/*.dsc
-            build/source/noble/gst-plugins-rs-webrtc-*/debian/
-            build/aur/*/PKGBUILD
-            build/aur/*/.SRCINFO
-          if-no-files-found: error
+          args: -color
+
+      - name: Check SPDX headers
+        run: python3 scripts/add_license_header.py --path . --types sh,yml,yaml,py --check
+
+      - name: Check the packaging metadata parses
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends dpkg-dev
+          scripts/build-source-package.sh \
+            --version '${{ needs.version.outputs.version }}' \
+            --revision '${{ needs.version.outputs.revision }}' \
+            --series noble --metadata-only
+          perl -MDpkg::Control::Info -e '
+            my $c = Dpkg::Control::Info->new("packaging/debian/control");
+            die "no binary package stanza\n" unless $c->get_packages();
+            print "control parses\n";'
 
   build:
-    name: build (${{ matrix.arch }})
-    needs: [version, metadata]
-    # arm64 is this project's reason to exist, so it is built on every run, on
-    # a native runner: cross-compiling needs a full foreign-arch sysroot, which
-    # is what every earlier iteration of this pipeline broke on.
+    name: build (${{ matrix.codename }}/${{ matrix.arch }})
+    needs: [version, checks]
     runs-on: ${{ matrix.runner }}
+    container:
+      image: ${{ matrix.image }}
     strategy:
       fail-fast: false
       matrix:
+        # gst-plugin-webrtc enables the gstreamer-rs "v1_22" features
+        # unconditionally, so a release must ship GStreamer >= 1.22. That rules
+        # out Ubuntu 22.04 (1.20.3); bookworm sits exactly on the minimum.
+        codename: [bookworm, trixie, noble, resolute]
+        arch: [amd64, arm64]
         include:
+          - codename: bookworm
+            image: debian:bookworm
+          - codename: trixie
+            image: debian:trixie
+          - codename: noble
+            image: ubuntu:24.04
+          - codename: resolute
+            image: ubuntu:26.04
           - arch: amd64
             runner: ubuntu-latest
           - arch: arm64
             runner: ubuntu-24.04-arm
     steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
       - name: Install build dependencies
+        env:
+          DEBIAN_FRONTEND: noninteractive
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            pkg-config \
+          set -eu
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ca-certificates curl git build-essential pkg-config \
+            debhelper dpkg-dev \
             libgstreamer1.0-dev \
             libgstreamer-plugins-base1.0-dev \
             libgstreamer-plugins-bad1.0-dev \
@@ -247,30 +199,47 @@ jobs:
             libsoup-3.0-dev \
             libnice-dev
 
+      - name: Checkout
+        uses: actions/checkout@v7
+
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        run: |
+          set -eu
+          # Upstream needs rustc 1.92; no target release packages anything
+          # close, so the toolchain comes from rustup rather than apt.
+          curl -sSf https://sh.rustup.rs \
+            | sh -s -- -y --default-toolchain stable --profile minimal
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Report the toolchain and GStreamer version
+        run: |
+          rustc --version
+          pkg-config --modversion gstreamer-1.0
 
       - name: Build the plugins
         run: |
           scripts/build-plugins.sh \
             --upstream-tag '${{ needs.version.outputs.upstream_tag }}' \
-            --version '${{ needs.version.outputs.version }}'
+            --version '${{ needs.version.outputs.version }}' \
+            --codename '${{ matrix.codename }}'
 
       - name: Build the .deb
         run: |
           scripts/build-deb.sh \
             --version '${{ needs.version.outputs.version }}' \
             --revision '${{ needs.version.outputs.revision }}' \
-            --tarball "dist/gst-plugins-rs-webrtc-${{ needs.version.outputs.version }}-${{ matrix.arch }}.tar.gz"
+            --codename '${{ matrix.codename }}' \
+            --tarball "dist/gst-plugins-rs-webrtc-${{ needs.version.outputs.version }}-${{ matrix.codename }}-${{ matrix.arch }}.tar.gz"
 
       - name: Verify the plugins load
+        env:
+          DEBIAN_FRONTEND: noninteractive
         run: |
-          set -euo pipefail
-          sudo apt-get install -y --no-install-recommends gstreamer1.0-tools
-          # Install through apt, not dpkg -i, so the package's own Depends and
-          # Recommends are resolved: this is what a user runs, and it proves
-          # the declared dependencies are both correct and installable.
-          sudo apt-get install -y ./dist/*.deb
+          set -eu
+          apt-get install -y --no-install-recommends gstreamer1.0-tools
+          # Install through apt so the Depends dh_shlibdeps computed are
+          # resolved: this is what a user runs, and it proves they are right.
+          apt-get install -y ./dist/*.deb
           # whipsink instantiates webrtcbin while being inspected, so this
           # aborts outright if gstreamer1.0-plugins-bad is not pulled in.
           gst-inspect-1.0 webrtcsink
@@ -279,6 +248,250 @@ jobs:
       - name: Upload the packages
         uses: actions/upload-artifact@v7
         with:
-          name: packages-${{ matrix.arch }}
+          name: packages-${{ matrix.codename }}-${{ matrix.arch }}
           path: dist/*
           if-no-files-found: error
+
+  aur-metadata:
+    name: aur metadata
+    needs: [version, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Download the packages
+        uses: actions/download-artifact@v8
+        with:
+          pattern: packages-*
+          merge-multiple: true
+          path: dist
+
+      - name: Render both PKGBUILDs with their checksums
+        run: |
+          set -euo pipefail
+          # makepkg is the only supported .SRCINFO generator and it refuses to
+          # run as root, so this happens as an unprivileged user in an Arch
+          # container. No SSH key is mounted: this stage only renders.
+          for pkg in gst-plugins-rs-webrtc gst-plugins-rs-webrtc-bin; do
+            docker run --rm \
+              -v "$PWD:/work" \
+              -w /work \
+              -e "PACKAGE=$pkg" \
+              -e 'VERSION=${{ needs.version.outputs.version }}' \
+              archlinux:base-devel \
+              scripts/aur-container-entrypoint.sh \
+                --pkgrel '${{ needs.version.outputs.revision }}' --dry-run
+          done
+
+      - name: Upload the rendered PKGBUILDs
+        uses: actions/upload-artifact@v7
+        with:
+          name: aur-metadata
+          path: |
+            build/aur/*/PKGBUILD
+            build/aur/*/.SRCINFO
+          if-no-files-found: error
+
+  gate:
+    name: publishing targets
+    needs: version
+    if: needs.version.outputs.proceed == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      launchpad: ${{ steps.gate.outputs.launchpad }}
+      aur: ${{ steps.gate.outputs.aur }}
+    steps:
+      - name: Decide which downstream publishers can run
+        id: gate
+        env:
+          # `secrets` is not readable from a job-level `if`, so the decision is
+          # made here and exposed as an output the other jobs gate on.
+          LAUNCHPAD_GPG_PRIVATE_KEY: ${{ secrets.LAUNCHPAD_GPG_PRIVATE_KEY }}
+          LAUNCHPAD_PPA: ${{ vars.LAUNCHPAD_PPA }}
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          launchpad=false
+          if [ -n "$LAUNCHPAD_GPG_PRIVATE_KEY" ] && [ -n "$LAUNCHPAD_PPA" ]; then
+            launchpad=true
+          fi
+          aur=false
+          if [ -n "$AUR_SSH_PRIVATE_KEY" ]; then
+            aur=true
+          fi
+          {
+            echo "launchpad=$launchpad"
+            echo "aur=$aur"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "### Downstream publishing"
+            echo ""
+            echo "| Target | Enabled | Requires |"
+            echo "| --- | --- | --- |"
+            echo "| Launchpad PPA | \`$launchpad\` | \`LAUNCHPAD_GPG_PRIVATE_KEY\` secret + \`LAUNCHPAD_PPA\` variable |"
+            echo "| AUR | \`$aur\` | \`AUR_SSH_PRIVATE_KEY\` secret |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  release:
+    name: github release
+    needs: [version, build, aur-metadata]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download the packages
+        uses: actions/download-artifact@v8
+        with:
+          pattern: packages-*
+          merge-multiple: true
+          path: dist
+
+      - name: Generate checksums
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum ./*.tar.gz ./*.deb > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Publish the release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ needs.version.outputs.tag }}
+          name: ${{ needs.version.outputs.tag }}
+          body: |
+            GStreamer Rust WebRTC plugins built from upstream
+            [`${{ needs.version.outputs.upstream_tag }}`](https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs/-/tree/${{ needs.version.outputs.upstream_tag }}).
+
+            One build per distribution release, because `gst-plugin-webrtc`
+            compiles against the GStreamer headers it finds and needs >= 1.22.
+            Pick the one matching your system:
+
+            | Release | GStreamer | Package |
+            | --- | --- | --- |
+            | Debian 12 | 1.22 | `..._${{ needs.version.outputs.version }}-${{ needs.version.outputs.revision }}~bookworm1_<arch>.deb` |
+            | Debian 13 / Raspberry Pi OS | 1.26 | `..._${{ needs.version.outputs.version }}-${{ needs.version.outputs.revision }}~trixie1_<arch>.deb` |
+            | Ubuntu 24.04 | 1.24 | `..._${{ needs.version.outputs.version }}-${{ needs.version.outputs.revision }}~noble1_<arch>.deb` |
+            | Ubuntu 26.04 | 1.28 | `..._${{ needs.version.outputs.version }}-${{ needs.version.outputs.revision }}~resolute1_<arch>.deb` |
+
+            Tarballs are named `gst-plugins-rs-webrtc-<version>-<release>-<arch>.tar.gz`
+            and unpack `lib/gstreamer-1.0/*.so`. `SHA256SUMS` covers every asset.
+          files: dist/*
+          make_latest: true
+
+  launchpad:
+    name: launchpad ppa
+    needs: [version, build, release, gate]
+    if: needs.gate.outputs.launchpad == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Download the packages
+        uses: actions/download-artifact@v8
+        with:
+          pattern: packages-*
+          merge-multiple: true
+          path: dist
+
+      - name: Install packaging tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            debhelper devscripts dput dpkg-dev
+
+      - name: Import the signing key
+        env:
+          LAUNCHPAD_GPG_PRIVATE_KEY: ${{ secrets.LAUNCHPAD_GPG_PRIVATE_KEY }}
+          LAUNCHPAD_GPG_PASSPHRASE: ${{ secrets.LAUNCHPAD_GPG_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.gnupg"
+          chmod 700 "$HOME/.gnupg"
+          # dpkg-buildpackage drives gpg non-interactively, so the agent has to
+          # accept a passphrase supplied on the command line and keep it for
+          # the whole upload run.
+          printf 'allow-loopback-pinentry\ndefault-cache-ttl 7200\nmax-cache-ttl 7200\n' \
+            > "$HOME/.gnupg/gpg-agent.conf"
+          printf 'pinentry-mode loopback\n' > "$HOME/.gnupg/gpg.conf"
+          gpgconf --kill gpg-agent || true
+          echo "$LAUNCHPAD_GPG_PRIVATE_KEY" | gpg --batch --import
+          # Prime the agent cache so the signing steps below need no prompt.
+          echo priming | gpg --batch --yes --passphrase "$LAUNCHPAD_GPG_PASSPHRASE" \
+            --pinentry-mode loopback --sign > /dev/null
+
+      - name: Build and upload the source packages
+        env:
+          LAUNCHPAD_PPA: ${{ vars.LAUNCHPAD_PPA }}
+          # Only Ubuntu series exist on Launchpad, and only those the build
+          # matrix produced binaries for.
+          LAUNCHPAD_SERIES: ${{ vars.LAUNCHPAD_SERIES }}
+        run: |
+          scripts/publish-launchpad.sh \
+            --version '${{ needs.version.outputs.version }}' \
+            --revision '${{ needs.version.outputs.revision }}' \
+            --ppa "$LAUNCHPAD_PPA" \
+            --series "${LAUNCHPAD_SERIES:-noble resolute}"
+
+      - name: Summarise
+        run: |
+          {
+            echo "### Launchpad"
+            echo ""
+            echo "Uploaded \`gst-plugins-rs-webrtc ${{ needs.version.outputs.version }}\` to \`${{ vars.LAUNCHPAD_PPA }}\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  aur:
+    name: aur
+    needs: [version, build, aur-metadata, release, gate]
+    if: needs.gate.outputs.aur == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        package:
+          - gst-plugins-rs-webrtc
+          - gst-plugins-rs-webrtc-bin
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Download the packages
+        uses: actions/download-artifact@v8
+        with:
+          pattern: packages-*
+          merge-multiple: true
+          path: dist
+
+      - name: Configure the AUR SSH key
+        env:
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.ssh"
+          chmod 700 "$HOME/.ssh"
+          printf '%s\n' "$AUR_SSH_PRIVATE_KEY" > "$HOME/.ssh/aur"
+          chmod 600 "$HOME/.ssh/aur"
+
+      - name: Render and push the package
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            -v "$PWD:/work" \
+            -v "$HOME/.ssh:/ssh:ro" \
+            -w /work \
+            -e "PACKAGE=${{ matrix.package }}" \
+            -e 'VERSION=${{ needs.version.outputs.version }}' \
+            archlinux:base-devel \
+            scripts/aur-container-entrypoint.sh \
+              --pkgrel '${{ needs.version.outputs.revision }}'
+
+      - name: Summarise
+        run: |
+          {
+            echo "### AUR"
+            echo ""
+            echo "Pushed \`${{ matrix.package }} ${{ needs.version.outputs.version }}\` to <https://aur.archlinux.org/packages/${{ matrix.package }}>."
+          } >> "$GITHUB_STEP_SUMMARY"

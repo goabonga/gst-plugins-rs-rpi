@@ -3,36 +3,44 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Chris <goabonga@pm.me>
 
-# Turn a tarball produced by build-plugins.sh into a binary .deb that drops
-# the shared objects into the multi-arch GStreamer plugin directory.
+# Turn a tarball from build-plugins.sh into a binary .deb for the distribution
+# release this script is running on:
 #
-#   <outdir>/gst-plugins-rs-webrtc_<version>-<revision>_<debarch>.deb
+#   <outdir>/gst-plugins-rs-webrtc_<version>-<revision>~<codename>1_<arch>.deb
 #     /usr/lib/<triplet>/gstreamer-1.0/*.so
+#
+# It goes through dpkg-buildpackage rather than dpkg-deb so that dh_shlibdeps
+# computes Depends from the shared objects themselves, against the packages of
+# the release being built for. Hand-written dependency lists got this wrong in
+# both directions: they missed gstreamer1.0-plugins-bad, which made the plugins
+# abort on load, and they named libsoup/libnice/libssl, which the Rust crates
+# link statically and no .so actually needs.
 
 set -euo pipefail
 
-PACKAGE="${PACKAGE:-gst-plugins-rs-webrtc}"
-CONTROL_TEMPLATE="${CONTROL_TEMPLATE:-packaging/deb/control.in}"
+# shellcheck source=scripts/lib/debian-tree.sh
+. "$(dirname "$0")/lib/debian-tree.sh"
 
 usage() {
     cat <<'USAGE'
-Usage: build-deb.sh --version <version> --tarball <path> [options]
+Usage: build-deb.sh --version <version> --codename <codename> --tarball <path>
 
 Options:
   --version <version>    Upstream version, e.g. 1.28.6.
-  --tarball <path>       Tarball from build-plugins.sh (lib/gstreamer-1.0/*.so).
-  --revision <n>         Debian revision (default: 1).
+  --codename <codename>  Distribution release built for, e.g. trixie.
+  --tarball <path>       Tarball from build-plugins.sh.
+  --revision <n>         Packaging revision (default: 1).
   --workdir <dir>        Scratch directory (default: build).
   --outdir <dir>         Where to write the .deb (default: dist).
   -h, --help             Show this help.
 
 Environment:
-  PACKAGE                Binary package name.
-  CONTROL_TEMPLATE       Path to the control template.
+  DEBIAN_TEMPLATE        debian/ template directory (default: packaging/debian).
 USAGE
 }
 
 VERSION=""
+CODENAME=""
 TARBALL=""
 REVISION="1"
 WORKDIR="build"
@@ -41,6 +49,7 @@ OUTDIR="dist"
 while [ $# -gt 0 ]; do
     case "$1" in
         --version) VERSION="$2"; shift 2 ;;
+        --codename) CODENAME="$2"; shift 2 ;;
         --tarball) TARBALL="$2"; shift 2 ;;
         --revision) REVISION="$2"; shift 2 ;;
         --workdir) WORKDIR="$2"; shift 2 ;;
@@ -50,52 +59,40 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-if [ -z "$VERSION" ] || [ -z "$TARBALL" ]; then
-    echo "error: --version and --tarball are required" >&2
+if [ -z "$VERSION" ] || [ -z "$CODENAME" ] || [ -z "$TARBALL" ]; then
+    echo "error: --version, --codename and --tarball are required" >&2
     usage >&2
     exit 2
 fi
-if [ ! -f "$TARBALL" ]; then
-    echo "error: no such tarball: $TARBALL" >&2
-    exit 1
-fi
-if [ ! -f "$CONTROL_TEMPLATE" ]; then
-    echo "error: no such control template: $CONTROL_TEMPLATE" >&2
-    exit 1
-fi
 
 DEB_ARCH=$(dpkg-architecture -qDEB_HOST_ARCH)
-GNU_TRIPLET=$(dpkg-architecture -qDEB_HOST_MULTIARCH)
-DEB_VERSION="${VERSION}-${REVISION}"
+SRCDIR="$WORKDIR/deb/$CODENAME/gst-plugins-rs-webrtc-$VERSION"
 
-ROOT="$WORKDIR/deb/$DEB_ARCH"
-PLUGIN_DIR="$ROOT/usr/lib/$GNU_TRIPLET/gstreamer-1.0"
-DOC_DIR="$ROOT/usr/share/doc/$PACKAGE"
+rm -rf "$SRCDIR"
+mkdir -p "$SRCDIR" "$OUTDIR"
 
-rm -rf "$ROOT"
-mkdir -p "$ROOT/DEBIAN" "$PLUGIN_DIR" "$DOC_DIR" "$OUTDIR"
+unpack_binaries "$SRCDIR" "$DEB_ARCH" "$TARBALL"
+install -m 0644 LICENSE "$SRCDIR/LICENSE"
+render_debian_tree "$SRCDIR" "$VERSION" "$REVISION" "$CODENAME"
 
-tar -xzf "$TARBALL" -C "$WORKDIR/deb" lib/gstreamer-1.0
-mv "$WORKDIR"/deb/lib/gstreamer-1.0/*.so "$PLUGIN_DIR/"
-rmdir "$WORKDIR/deb/lib/gstreamer-1.0" "$WORKDIR/deb/lib"
+echo "==> building $DEB_VERSION for $DEB_ARCH on $CODENAME"
+(cd "$SRCDIR" && dpkg-buildpackage -b -us -uc)
 
-install -m 0644 LICENSE "$DOC_DIR/copyright"
+DEB="$WORKDIR/deb/$CODENAME/gst-plugins-rs-webrtc_${DEB_VERSION}_${DEB_ARCH}.deb"
+if [ ! -f "$DEB" ]; then
+    echo "error: dpkg-buildpackage did not produce $DEB" >&2
+    exit 1
+fi
+mv "$DEB" "$OUTDIR/"
+DEB="$OUTDIR/$(basename "$DEB")"
 
-INSTALLED_SIZE=$(du -sk "$ROOT/usr" | cut -f1)
-
-sed -e "s|@PACKAGE@|$PACKAGE|g" \
-    -e "s|@DEB_VERSION@|$DEB_VERSION|g" \
-    -e "s|@DEB_ARCH@|$DEB_ARCH|g" \
-    -e "s|@INSTALLED_SIZE@|$INSTALLED_SIZE|g" \
-    -e "s|@UPSTREAM_VERSION@|$VERSION|g" \
-    "$CONTROL_TEMPLATE" > "$ROOT/DEBIAN/control"
-
-DEB="$OUTDIR/${PACKAGE}_${DEB_VERSION}_${DEB_ARCH}.deb"
-dpkg-deb --build --root-owner-group "$ROOT" "$DEB"
-
-dpkg-deb --info "$DEB"
+# The whole point of building per release: show what shlibdeps resolved to.
+dpkg-deb -f "$DEB" Package Version Architecture Depends Recommends
 ls -lh "$DEB"
 
 if [ -n "${GITHUB_ENV:-}" ]; then
-    echo "DEB=$DEB" >> "$GITHUB_ENV"
+    {
+        echo "DEB=$DEB"
+        echo "DEB_VERSION=$DEB_VERSION"
+    } >> "$GITHUB_ENV"
 fi

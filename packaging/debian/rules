@@ -1,10 +1,14 @@
 #!/usr/bin/make -f
 
-# The upstream Rust workspace declares rust-version = 1.92, which no Ubuntu
-# series ships (noble has rustc 1.75), so Launchpad's builders cannot compile
-# it. The source tarball therefore carries the shared objects built by the
-# project's GitHub Actions pipeline on native amd64 and arm64 runners, and
-# this rules file only installs the set matching the build architecture.
+# Nothing is compiled here: the shared objects are built by the pipeline, in a
+# container of the target distribution release, and this rules file only
+# installs the set matching the build architecture.
+#
+# The compile cannot happen at package build time on Launchpad anyway --
+# upstream declares rust-version = 1.92 and the newest rustc in the Ubuntu
+# archive is 1.75 -- so the same tree serves the binary build and the source
+# upload. dh_shlibdeps still runs here, which is the point: it resolves the
+# dependencies against the release the package is actually built for.
 
 DEB_HOST_ARCH ?= $(shell dpkg-architecture -qDEB_HOST_ARCH)
 DEB_HOST_MULTIARCH ?= $(shell dpkg-architecture -qDEB_HOST_MULTIARCH)
