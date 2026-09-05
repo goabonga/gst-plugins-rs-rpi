@@ -35,13 +35,15 @@ call symbols another does not have. Pick the package matching your system:
 
 | Your system | GStreamer | Package suffix |
 | --- | --- | --- |
-| Debian 12 | 1.22 | `~bookworm1` |
 | Debian 13 / Raspberry Pi OS (trixie) | 1.26 | `~trixie1` |
 | Ubuntu 24.04 | 1.24 | `~noble1` |
 | Ubuntu 26.04 | 1.28 | `~resolute1` |
 
-Ubuntu 22.04 is not supported: it ships GStreamer 1.20, below the 1.22 the
-plugins require.
+**Debian 12 and Ubuntu 22.04 cannot be supported.** `gstreamer-sys`, the
+bindings crate `gst-plugins-rs` builds on, requires `gstreamer-1.0 >= 1.24`
+from pkg-config and fails the build below that; bookworm ships 1.22.0 and jammy
+1.20.3. This floor comes from the bindings, not from the plugins, and it moves
+when upstream changes the `gstreamer-rs` branch it tracks.
 
 ### Debian / Ubuntu / Raspberry Pi OS
 
@@ -134,7 +136,7 @@ the one before it; the matrices fan out inside a stage.
 | --- | --- |
 | **version** | asks GitLab for the newest stable upstream tag and decides whether it is already released here |
 | **checks** | `shellcheck`, `actionlint`, SPDX headers, packaging metadata parses |
-| **build** | 4 releases x 2 architectures in parallel, each in a container of its target release: compile, `.deb`, install through `apt`, inspect the elements |
+| **build** | 3 releases x 2 architectures in parallel, each in a container of its target release: compile, `.deb`, install through `apt`, inspect the elements |
 | **aur metadata** | renders both PKGBUILDs with the real checksums |
 | **github release** | tarballs, `.deb`s and `SHA256SUMS` |
 | **launchpad**, **aur** | only when the secrets are configured |

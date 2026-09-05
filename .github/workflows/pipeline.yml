@@ -163,14 +163,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # gst-plugin-webrtc enables the gstreamer-rs "v1_22" features
-        # unconditionally, so a release must ship GStreamer >= 1.22. That rules
-        # out Ubuntu 22.04 (1.20.3); bookworm sits exactly on the minimum.
-        codename: [bookworm, trixie, noble, resolute]
+        # gstreamer-sys, the -sys crate gst-plugins-rs pulls from the
+        # gstreamer-rs 0.25 branch, asks pkg-config for `gstreamer-1.0 >= 1.24`
+        # and fails the build outright below that. This is not the plugin's own
+        # "v1_22" feature level: it is a hard floor from the bindings, and it
+        # moves whenever upstream changes the gstreamer-rs branch it tracks.
+        #
+        # That rules out Debian 12 (1.22.0) and Ubuntu 22.04 (1.20.3).
+        codename: [trixie, noble, resolute]
         arch: [amd64, arm64]
         include:
-          - codename: bookworm
-            image: debian:bookworm
           - codename: trixie
             image: debian:trixie
           - codename: noble
