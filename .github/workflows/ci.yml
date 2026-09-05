@@ -42,6 +42,40 @@ jobs:
       - name: Check SPDX headers
         run: python3 scripts/add_license_header.py --path . --types sh,yml,yaml,py --check
 
+  packaging:
+    name: packaging metadata
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install packaging tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            debhelper devscripts dpkg-dev lintian
+
+      - name: Build the Launchpad source package from stand-in binaries
+        run: |
+          set -euo pipefail
+          # The real .so come from the build jobs; the source package only has
+          # to lay them out, so placeholders exercise every packaging step.
+          mkdir -p stub/lib/gstreamer-1.0 dist
+          : > stub/lib/gstreamer-1.0/libgstrswebrtc.so
+          for arch in amd64 arm64; do
+            tar -czf "dist/gst-plugins-rs-webrtc-0.0.0-$arch.tar.gz" -C stub lib
+          done
+          scripts/build-source-package.sh --version 0.0.0 --series noble --with-orig
+
+      - name: Lint the source package (informational)
+        continue-on-error: true
+        run: lintian build/source/noble/*.dsc
+
+      - name: Validate the binary package control template
+        run: |
+          scripts/build-deb.sh --help >/dev/null
+          grep -q '^Package: @PACKAGE@$' packaging/deb/control.in
+
   build:
     name: build (amd64)
     runs-on: ubuntu-latest
