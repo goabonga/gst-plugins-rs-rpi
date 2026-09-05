@@ -1,0 +1,77 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Chris <goabonga@pm.me>
+
+name: Packaging Bug Report
+description: A published package fails to install, load or build
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This repository builds and packages upstream `gst-plugins-rs`. Bugs in
+        the plugins themselves belong
+        [upstream](https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs/-/issues);
+        use this form for install, packaging and pipeline problems.
+
+  - type: input
+    id: version
+    attributes:
+      label: Release
+      description: "The release you installed, e.g. v1.28.6."
+    validations:
+      required: true
+
+  - type: dropdown
+    id: package
+    attributes:
+      label: How did you install it?
+      options:
+        - .deb from a GitHub release
+        - Launchpad PPA
+        - AUR (gst-plugins-rs-webrtc)
+        - AUR (gst-plugins-rs-webrtc-bin)
+        - Tarball
+        - Built from this repository
+    validations:
+      required: true
+
+  - type: dropdown
+    id: arch
+    attributes:
+      label: Architecture
+      options:
+        - amd64 / x86_64
+        - arm64 / aarch64
+    validations:
+      required: true
+
+  - type: input
+    id: distro
+    attributes:
+      label: Distribution and version
+      description: "Output of `lsb_release -ds`, or the Arch/Raspberry Pi OS version."
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What went wrong
+      description: What did you expect, and what happened instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The exact commands you ran.
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Output
+      description: "dpkg/pacman output, or `GST_DEBUG=3 gst-inspect-1.0 webrtcsink`."
+      render: shell
