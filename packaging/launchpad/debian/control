@@ -1,0 +1,28 @@
+Source: gst-plugins-rs-webrtc
+Section: libs
+Priority: optional
+Maintainer: Chris <goabonga@pm.me>
+Build-Depends:
+ debhelper-compat (= 13)
+Standards-Version: 4.6.2
+Homepage: https://github.com/goabonga/gst-plugins-rs-rpi
+Vcs-Git: https://github.com/goabonga/gst-plugins-rs-rpi.git
+Vcs-Browser: https://github.com/goabonga/gst-plugins-rs-rpi
+Rules-Requires-Root: no
+
+Package: gst-plugins-rs-webrtc
+Architecture: amd64 arm64
+Depends:
+ ${shlibs:Depends},
+ ${misc:Depends}
+Description: GStreamer Rust WebRTC plugins (webrtcsrc/webrtcsink)
+ Pre-built WebRTC elements from the gst-plugins-rs Rust bindings
+ (gst-plugin-webrtc and gst-plugin-webrtchttp): webrtcsrc, webrtcsink,
+ whipsink, whepsrc and the associated signallers.
+ .
+ The plugins install into the GStreamer multi-arch plugin directory and are
+ discovered automatically -- no GST_PLUGIN_PATH needed.
+ .
+ The shared objects are compiled by the project's GitHub Actions pipeline and
+ shipped in the source tarball; see /usr/share/doc/gst-plugins-rs-webrtc for
+ the reason and for how to verify them against the published checksums.

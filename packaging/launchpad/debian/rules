@@ -1,0 +1,34 @@
+#!/usr/bin/make -f
+
+# The upstream Rust workspace declares rust-version = 1.92, which no Ubuntu
+# series ships (noble has rustc 1.75), so Launchpad's builders cannot compile
+# it. The source tarball therefore carries the shared objects built by the
+# project's GitHub Actions pipeline on native amd64 and arm64 runners, and
+# this rules file only installs the set matching the build architecture.
+
+DEB_HOST_ARCH ?= $(shell dpkg-architecture -qDEB_HOST_ARCH)
+DEB_HOST_MULTIARCH ?= $(shell dpkg-architecture -qDEB_HOST_MULTIARCH)
+
+PLUGIN_DIR = debian/gst-plugins-rs-webrtc/usr/lib/$(DEB_HOST_MULTIARCH)/gstreamer-1.0
+SOURCE_DIR = binaries/$(DEB_HOST_ARCH)/lib/gstreamer-1.0
+
+%:
+	dh $@
+
+# Nothing is compiled here.
+override_dh_auto_build:
+
+override_dh_auto_test:
+
+override_dh_auto_install:
+	@test -d $(SOURCE_DIR) || { \
+	  echo "ERROR: no prebuilt plugins for $(DEB_HOST_ARCH) in $(SOURCE_DIR)"; \
+	  exit 1; \
+	}
+	install -d $(PLUGIN_DIR)
+	install -m 0644 $(SOURCE_DIR)/*.so $(PLUGIN_DIR)/
+
+# The shared objects are already stripped by the build pipeline, and they have
+# no separate debug symbols to split out.
+override_dh_strip:
+	dh_strip --no-automatic-dbgsym
