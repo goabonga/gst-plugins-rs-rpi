@@ -1,0 +1,90 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Chris <goabonga@pm.me>
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Lint shell scripts
+        run: shellcheck scripts/*.sh
+
+      - name: Lint workflows
+        uses: docker://rhysd/actionlint:1.7.7
+        with:
+          args: -color
+
+  license-headers:
+    name: license headers
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Check SPDX headers
+        run: python3 scripts/add_license_header.py --path . --types sh,yml,yaml,py --check
+
+  build:
+    name: build (amd64)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config \
+            libgstreamer1.0-dev \
+            libgstreamer-plugins-base1.0-dev \
+            libgstreamer-plugins-bad1.0-dev \
+            libglib2.0-dev \
+            libssl-dev \
+            libsoup-3.0-dev \
+            libnice-dev
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Resolve the newest stable upstream release
+        id: upstream
+        run: scripts/check-upstream.sh --current ''
+
+      - name: Build the plugins
+        run: |
+          scripts/build-plugins.sh \
+            --upstream-tag "${{ steps.upstream.outputs.upstream_tag }}" \
+            --version "${{ steps.upstream.outputs.latest }}"
+
+      - name: Build the .deb
+        run: |
+          scripts/build-deb.sh \
+            --version "${{ steps.upstream.outputs.latest }}" \
+            --tarball "dist/gst-plugins-rs-webrtc-${{ steps.upstream.outputs.latest }}-amd64.tar.gz"
+
+      - name: Verify the plugins load
+        run: |
+          sudo apt-get install -y --no-install-recommends \
+            gstreamer1.0-tools gstreamer1.0-plugins-base
+          sudo dpkg -i dist/*.deb
+          gst-inspect-1.0 webrtcsink
+          gst-inspect-1.0 whipsink
