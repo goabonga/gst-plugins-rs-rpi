@@ -1,0 +1,193 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Chris <goabonga@pm.me>
+
+name: release
+
+# Callable three ways:
+#   - `workflow_call` from upstream-watch.yml, right after it tagged a new
+#     upstream release (a tag pushed with GITHUB_TOKEN does not start another
+#     workflow, so the watcher calls this one directly);
+#   - a `v*` tag pushed by hand;
+#   - `workflow_dispatch`, defaulting to the newest stable upstream release.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      upstream_tag:
+        description: 'Upstream tag to build (e.g. gstreamer-1.28.6); empty = newest stable'
+        required: false
+        default: ''
+  workflow_call:
+    inputs:
+      upstream_tag:
+        description: 'Upstream tag to build (e.g. gstreamer-1.28.6)'
+        type: string
+        required: true
+      tag:
+        description: 'Release tag to publish (e.g. v1.28.6)'
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: resolve version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      tag: ${{ steps.resolve.outputs.tag }}
+      upstream_tag: ${{ steps.resolve.outputs.upstream_tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Resolve the newest stable upstream release
+        id: upstream
+        if: inputs.upstream_tag == '' && github.ref_type != 'tag'
+        run: scripts/check-upstream.sh --current ''
+
+      - name: Resolve the version to build
+        id: resolve
+        env:
+          INPUT_UPSTREAM_TAG: ${{ inputs.upstream_tag }}
+          INPUT_TAG: ${{ inputs.tag }}
+          NEWEST_UPSTREAM_TAG: ${{ steps.upstream.outputs.upstream_tag }}
+        run: |
+          set -euo pipefail
+          upstream_tag="$INPUT_UPSTREAM_TAG"
+          tag="$INPUT_TAG"
+
+          if [ -z "$upstream_tag" ] && [ "$GITHUB_REF_TYPE" = 'tag' ]; then
+            tag="$GITHUB_REF_NAME"
+            upstream_tag="gstreamer-${tag#v}"
+          fi
+          [ -n "$upstream_tag" ] || upstream_tag="$NEWEST_UPSTREAM_TAG"
+
+          if [ -z "$upstream_tag" ]; then
+            echo "error: could not resolve an upstream tag to build" >&2
+            exit 1
+          fi
+
+          version="${upstream_tag#gstreamer-}"
+          [ -n "$tag" ] || tag="v$version"
+
+          {
+            echo "version=$version"
+            echo "tag=$tag"
+            echo "upstream_tag=$upstream_tag"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "### Release $tag"
+            echo ""
+            echo "| | |"
+            echo "| --- | --- |"
+            echo "| upstream tag | \`$upstream_tag\` |"
+            echo "| version | \`$version\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    name: build (${{ matrix.arch }})
+    needs: prepare
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config \
+            libgstreamer1.0-dev \
+            libgstreamer-plugins-base1.0-dev \
+            libgstreamer-plugins-bad1.0-dev \
+            libglib2.0-dev \
+            libssl-dev \
+            libsoup-3.0-dev \
+            libnice-dev
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build the plugins
+        run: |
+          scripts/build-plugins.sh \
+            --upstream-tag '${{ needs.prepare.outputs.upstream_tag }}' \
+            --version '${{ needs.prepare.outputs.version }}'
+
+      - name: Build the .deb
+        run: |
+          scripts/build-deb.sh \
+            --version '${{ needs.prepare.outputs.version }}' \
+            --tarball "dist/gst-plugins-rs-webrtc-${{ needs.prepare.outputs.version }}-${{ matrix.arch }}.tar.gz"
+
+      - name: Verify the plugins load
+        run: |
+          sudo apt-get install -y --no-install-recommends \
+            gstreamer1.0-tools gstreamer1.0-plugins-base
+          sudo dpkg -i dist/*.deb
+          gst-inspect-1.0 webrtcsink
+          gst-inspect-1.0 whipsink
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: packages-${{ matrix.arch }}
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    name: github release
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: packages-*
+          merge-multiple: true
+          path: dist
+
+      - name: Generate checksums
+        run: |
+          cd dist
+          sha256sum ./* > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Publish the release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ needs.prepare.outputs.tag }}
+          name: ${{ needs.prepare.outputs.tag }}
+          body: |
+            Pre-built GStreamer Rust WebRTC plugins from upstream
+            [`${{ needs.prepare.outputs.upstream_tag }}`](https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs/-/tree/${{ needs.prepare.outputs.upstream_tag }}).
+
+            | Artifact | Target |
+            | --- | --- |
+            | `gst-plugins-rs-webrtc_${{ needs.prepare.outputs.version }}-1_amd64.deb` | Debian/Ubuntu x86-64 |
+            | `gst-plugins-rs-webrtc_${{ needs.prepare.outputs.version }}-1_arm64.deb` | Debian/Ubuntu arm64 (Raspberry Pi 64-bit) |
+            | `gst-plugins-rs-webrtc-${{ needs.prepare.outputs.version }}-<arch>.tar.gz` | any distribution |
+
+            `SHA256SUMS` covers every asset.
+          files: dist/*
+          make_latest: true
