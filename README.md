@@ -100,7 +100,9 @@ of them locally, run the same two scripts inside that release. On a Debian 13
 machine, for `trixie`:
 
 ```bash
-sudo apt install pkg-config debhelper dpkg-dev \
+# build-essential is an implied build dependency of dpkg-buildpackage, which
+# refuses to start without it even though debian/rules compiles nothing.
+sudo apt install build-essential pkg-config debhelper dpkg-dev \
   libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
   libgstreamer-plugins-bad1.0-dev libglib2.0-dev libssl-dev \
   libsoup-3.0-dev libnice-dev
