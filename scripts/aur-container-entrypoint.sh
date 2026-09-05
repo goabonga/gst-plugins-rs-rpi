@@ -20,23 +20,27 @@ PUBLISHER="${PUBLISHER:-publisher}"
 GIT_NAME="${GIT_NAME:-Chris}"
 GIT_EMAIL="${GIT_EMAIL:-goabonga@pm.me}"
 
-if [ ! -r "$AUR_SSH_KEY" ]; then
-    echo "error: no AUR SSH key at $AUR_SSH_KEY" >&2
-    exit 1
-fi
-
 pacman -Sy --noconfirm --needed git openssh
 
 id -u "$PUBLISHER" >/dev/null 2>&1 || useradd --create-home "$PUBLISHER"
 HOME_DIR=$(getent passwd "$PUBLISHER" | cut -d: -f6)
-
 install -d -m 700 -o "$PUBLISHER" -g "$PUBLISHER" "$HOME_DIR/.ssh"
-install -m 600 -o "$PUBLISHER" -g "$PUBLISHER" "$AUR_SSH_KEY" "$HOME_DIR/.ssh/aur"
 chown -R "$PUBLISHER:$PUBLISHER" .
+
+# The key is only needed to push. Without it a --dry-run render still works,
+# which is what the metadata stage uses to validate a PKGBUILD; a real publish
+# fails at `git clone` with an SSH error that says exactly that.
+if [ -r "$AUR_SSH_KEY" ]; then
+    install -m 600 -o "$PUBLISHER" -g "$PUBLISHER" "$AUR_SSH_KEY" "$HOME_DIR/.ssh/aur"
+    ssh_command="ssh -i $HOME_DIR/.ssh/aur -o StrictHostKeyChecking=accept-new"
+else
+    echo "note: no AUR SSH key at $AUR_SSH_KEY; only a --dry-run render can succeed"
+    ssh_command="ssh -o StrictHostKeyChecking=accept-new"
+fi
 
 export PACKAGE VERSION
 runuser -u "$PUBLISHER" -- env \
-    GIT_SSH_COMMAND="ssh -i $HOME_DIR/.ssh/aur -o StrictHostKeyChecking=accept-new" \
+    GIT_SSH_COMMAND="$ssh_command" \
     GIT_AUTHOR_NAME="$GIT_NAME" \
     GIT_AUTHOR_EMAIL="$GIT_EMAIL" \
     GIT_COMMITTER_NAME="$GIT_NAME" \

@@ -3,6 +3,11 @@
 
 name: ci
 
+# Pull requests run the same pipeline a release does, minus the publishing
+# stages: checks, then the newest stable upstream version resolved from
+# GitLab, then the packaging metadata, then both architectures built and
+# verified.
+
 on:
   push:
     branches: [main]
@@ -17,123 +22,6 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  lint:
-    name: lint
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Lint shell scripts
-        run: shellcheck scripts/*.sh
-
-      - name: Lint workflows
-        uses: docker://rhysd/actionlint:1.7.7
-        with:
-          args: -color
-
-  license-headers:
-    name: license headers
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Check SPDX headers
-        run: python3 scripts/add_license_header.py --path . --types sh,yml,yaml,py --check
-
-  packaging:
-    name: packaging metadata
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Install packaging tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            debhelper devscripts dpkg-dev lintian
-
-      - name: Build the Launchpad source package from stand-in binaries
-        run: |
-          set -euo pipefail
-          # The real .so come from the build jobs; the source package only has
-          # to lay them out, so placeholders exercise every packaging step.
-          mkdir -p stub/lib/gstreamer-1.0 dist
-          : > stub/lib/gstreamer-1.0/libgstrswebrtc.so
-          for arch in amd64 arm64; do
-            tar -czf "dist/gst-plugins-rs-webrtc-0.0.0-$arch.tar.gz" -C stub lib
-          done
-          scripts/build-source-package.sh --version 0.0.0 --series noble --with-orig
-
-      - name: Lint the source package (informational)
-        continue-on-error: true
-        run: lintian build/source/noble/*.dsc
-
-      - name: Validate the binary package control template
-        run: |
-          scripts/build-deb.sh --help >/dev/null
-          grep -q '^Package: @PACKAGE@$' packaging/deb/control.in
-
-  build:
-    name: build (${{ matrix.arch }})
-    # Same matrix as the release pipeline: arm64 is this project's reason to
-    # exist, so a pull request that breaks it must fail here, not at release.
-    runs-on: ${{ matrix.runner }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: amd64
-            runner: ubuntu-latest
-          - arch: arm64
-            runner: ubuntu-24.04-arm
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Install build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            pkg-config \
-            libgstreamer1.0-dev \
-            libgstreamer-plugins-base1.0-dev \
-            libgstreamer-plugins-bad1.0-dev \
-            libglib2.0-dev \
-            libssl-dev \
-            libsoup-3.0-dev \
-            libnice-dev
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Resolve the newest stable upstream release
-        id: upstream
-        run: scripts/check-upstream.sh --current ''
-
-      - name: Build the plugins
-        run: |
-          scripts/build-plugins.sh \
-            --upstream-tag "${{ steps.upstream.outputs.upstream_tag }}" \
-            --version "${{ steps.upstream.outputs.latest }}"
-
-      - name: Build the .deb
-        run: |
-          scripts/build-deb.sh \
-            --version "${{ steps.upstream.outputs.latest }}" \
-            --tarball "dist/gst-plugins-rs-webrtc-${{ steps.upstream.outputs.latest }}-${{ matrix.arch }}.tar.gz"
-
-      - name: Verify the plugins load
-        run: |
-          set -euo pipefail
-          sudo apt-get install -y --no-install-recommends gstreamer1.0-tools
-          # Install through apt, not dpkg -i, so the package's own Depends and
-          # Recommends are resolved: this is what a user runs, and it proves
-          # the declared dependencies are both correct and installable.
-          sudo apt-get install -y ./dist/*.deb
-          # whipsink instantiates webrtcbin while being inspected, so this
-          # aborts outright if gstreamer1.0-plugins-bad is not pulled in.
-          gst-inspect-1.0 webrtcsink
-          gst-inspect-1.0 whipsink
+  pipeline:
+    name: pipeline
+    uses: ./.github/workflows/pipeline.yml

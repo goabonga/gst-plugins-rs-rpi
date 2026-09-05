@@ -3,8 +3,15 @@
 
 name: release
 
+# The full pipeline plus the publishing stages:
+#
+#   checks -> version -> metadata -> build -> github release -> launchpad, aur
+#
+# The first four stages are the same reusable pipeline pull requests run, so
+# nothing is ever published from a tree that would fail CI.
+#
 # Callable three ways:
-#   - `workflow_call` from upstream-watch.yml, right after it tagged a new
+#   - `workflow_call` from upstream-watch.yml, right after it found a new
 #     upstream release (a tag pushed with GITHUB_TOKEN does not start another
 #     workflow, so the watcher calls this one directly);
 #   - a `v*` tag pushed by hand;
@@ -38,6 +45,13 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  pipeline:
+    name: pipeline
+    uses: ./.github/workflows/pipeline.yml
+    with:
+      upstream_tag: ${{ inputs.upstream_tag }}
+      tag: ${{ inputs.tag }}
+
   gate:
     name: publishing targets
     runs-on: ubuntu-latest
@@ -77,129 +91,9 @@ jobs:
             echo "| AUR | \`$aur\` | \`AUR_SSH_PRIVATE_KEY\` secret |"
           } >> "$GITHUB_STEP_SUMMARY"
 
-  prepare:
-    name: resolve version
-    runs-on: ubuntu-latest
-    outputs:
-      version: ${{ steps.resolve.outputs.version }}
-      tag: ${{ steps.resolve.outputs.tag }}
-      upstream_tag: ${{ steps.resolve.outputs.upstream_tag }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Resolve the newest stable upstream release
-        id: upstream
-        if: inputs.upstream_tag == '' && github.ref_type != 'tag'
-        run: scripts/check-upstream.sh --current ''
-
-      - name: Resolve the version to build
-        id: resolve
-        env:
-          INPUT_UPSTREAM_TAG: ${{ inputs.upstream_tag }}
-          INPUT_TAG: ${{ inputs.tag }}
-          NEWEST_UPSTREAM_TAG: ${{ steps.upstream.outputs.upstream_tag }}
-        run: |
-          set -euo pipefail
-          upstream_tag="$INPUT_UPSTREAM_TAG"
-          tag="$INPUT_TAG"
-
-          if [ -z "$upstream_tag" ] && [ "$GITHUB_REF_TYPE" = 'tag' ]; then
-            tag="$GITHUB_REF_NAME"
-            upstream_tag="gstreamer-${tag#v}"
-          fi
-          [ -n "$upstream_tag" ] || upstream_tag="$NEWEST_UPSTREAM_TAG"
-
-          if [ -z "$upstream_tag" ]; then
-            echo "error: could not resolve an upstream tag to build" >&2
-            exit 1
-          fi
-
-          version="${upstream_tag#gstreamer-}"
-          [ -n "$tag" ] || tag="v$version"
-
-          {
-            echo "version=$version"
-            echo "tag=$tag"
-            echo "upstream_tag=$upstream_tag"
-          } >> "$GITHUB_OUTPUT"
-
-          {
-            echo "### Release $tag"
-            echo ""
-            echo "| | |"
-            echo "| --- | --- |"
-            echo "| upstream tag | \`$upstream_tag\` |"
-            echo "| version | \`$version\` |"
-          } >> "$GITHUB_STEP_SUMMARY"
-
-  build:
-    name: build (${{ matrix.arch }})
-    needs: prepare
-    runs-on: ${{ matrix.runner }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: amd64
-            runner: ubuntu-latest
-          - arch: arm64
-            runner: ubuntu-24.04-arm
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Install build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            pkg-config \
-            libgstreamer1.0-dev \
-            libgstreamer-plugins-base1.0-dev \
-            libgstreamer-plugins-bad1.0-dev \
-            libglib2.0-dev \
-            libssl-dev \
-            libsoup-3.0-dev \
-            libnice-dev
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Build the plugins
-        run: |
-          scripts/build-plugins.sh \
-            --upstream-tag '${{ needs.prepare.outputs.upstream_tag }}' \
-            --version '${{ needs.prepare.outputs.version }}'
-
-      - name: Build the .deb
-        run: |
-          scripts/build-deb.sh \
-            --version '${{ needs.prepare.outputs.version }}' \
-            --tarball "dist/gst-plugins-rs-webrtc-${{ needs.prepare.outputs.version }}-${{ matrix.arch }}.tar.gz"
-
-      - name: Verify the plugins load
-        run: |
-          set -euo pipefail
-          sudo apt-get install -y --no-install-recommends gstreamer1.0-tools
-          # Install through apt, not dpkg -i, so the package's own Depends and
-          # Recommends are resolved: this is what a user runs, and it proves
-          # the declared dependencies are both correct and installable.
-          sudo apt-get install -y ./dist/*.deb
-          # whipsink instantiates webrtcbin while being inspected, so this
-          # aborts outright if gstreamer1.0-plugins-bad is not pulled in.
-          gst-inspect-1.0 webrtcsink
-          gst-inspect-1.0 whipsink
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v7
-        with:
-          name: packages-${{ matrix.arch }}
-          path: dist/*
-          if-no-files-found: error
-
   publish:
     name: github release
-    needs: [prepare, build]
+    needs: [pipeline]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -220,17 +114,17 @@ jobs:
       - name: Publish the release
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: ${{ needs.prepare.outputs.tag }}
-          name: ${{ needs.prepare.outputs.tag }}
+          tag_name: ${{ needs.pipeline.outputs.tag }}
+          name: ${{ needs.pipeline.outputs.tag }}
           body: |
             Pre-built GStreamer Rust WebRTC plugins from upstream
-            [`${{ needs.prepare.outputs.upstream_tag }}`](https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs/-/tree/${{ needs.prepare.outputs.upstream_tag }}).
+            [`${{ needs.pipeline.outputs.upstream_tag }}`](https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs/-/tree/${{ needs.pipeline.outputs.upstream_tag }}).
 
             | Artifact | Target |
             | --- | --- |
-            | `gst-plugins-rs-webrtc_${{ needs.prepare.outputs.version }}-1_amd64.deb` | Debian/Ubuntu x86-64 |
-            | `gst-plugins-rs-webrtc_${{ needs.prepare.outputs.version }}-1_arm64.deb` | Debian/Ubuntu arm64 (Raspberry Pi 64-bit) |
-            | `gst-plugins-rs-webrtc-${{ needs.prepare.outputs.version }}-<arch>.tar.gz` | any distribution |
+            | `gst-plugins-rs-webrtc_${{ needs.pipeline.outputs.version }}-1_amd64.deb` | Debian/Ubuntu x86-64 |
+            | `gst-plugins-rs-webrtc_${{ needs.pipeline.outputs.version }}-1_arm64.deb` | Debian/Ubuntu arm64 (Raspberry Pi 64-bit) |
+            | `gst-plugins-rs-webrtc-${{ needs.pipeline.outputs.version }}-<arch>.tar.gz` | any distribution |
 
             `SHA256SUMS` covers every asset.
           files: dist/*
@@ -238,7 +132,7 @@ jobs:
 
   launchpad:
     name: launchpad ppa
-    needs: [prepare, build, publish, gate]
+    needs: [pipeline, publish, gate]
     if: needs.gate.outputs.launchpad == 'true'
     runs-on: ubuntu-latest
     steps:
@@ -284,7 +178,7 @@ jobs:
           LAUNCHPAD_SERIES: ${{ vars.LAUNCHPAD_SERIES }}
         run: |
           scripts/publish-launchpad.sh \
-            --version '${{ needs.prepare.outputs.version }}' \
+            --version '${{ needs.pipeline.outputs.version }}' \
             --ppa "$LAUNCHPAD_PPA" \
             --series "${LAUNCHPAD_SERIES:-noble}"
 
@@ -293,14 +187,14 @@ jobs:
           {
             echo "### Launchpad"
             echo ""
-            echo "Uploaded \`gst-plugins-rs-webrtc ${{ needs.prepare.outputs.version }}\` to \`${{ vars.LAUNCHPAD_PPA }}\`."
+            echo "Uploaded \`gst-plugins-rs-webrtc ${{ needs.pipeline.outputs.version }}\` to \`${{ vars.LAUNCHPAD_PPA }}\`."
             echo ""
             echo "Launchpad emails the build result; packages appear once its builders finish."
           } >> "$GITHUB_STEP_SUMMARY"
 
   aur:
     name: aur
-    needs: [prepare, build, publish, gate]
+    needs: [pipeline, publish, gate]
     if: needs.gate.outputs.aur == 'true'
     runs-on: ubuntu-latest
     strategy:
@@ -341,7 +235,7 @@ jobs:
             -v "$HOME/.ssh:/ssh:ro" \
             -w /work \
             -e "PACKAGE=${{ matrix.package }}" \
-            -e "VERSION=${{ needs.prepare.outputs.version }}" \
+            -e "VERSION=${{ needs.pipeline.outputs.version }}" \
             archlinux:base-devel \
             scripts/aur-container-entrypoint.sh
 
@@ -350,5 +244,5 @@ jobs:
           {
             echo "### AUR"
             echo ""
-            echo "Pushed \`${{ matrix.package }} ${{ needs.prepare.outputs.version }}\` to <https://aur.archlinux.org/packages/${{ matrix.package }}>."
+            echo "Pushed \`${{ matrix.package }} ${{ needs.pipeline.outputs.version }}\` to <https://aur.archlinux.org/packages/${{ matrix.package }}>."
           } >> "$GITHUB_STEP_SUMMARY"
