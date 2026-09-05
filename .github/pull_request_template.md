@@ -27,7 +27,7 @@
 
 - [ ] Commits follow [Conventional Commits](https://www.conventionalcommits.org/)
 - [ ] Branch is up to date with `main`
-- [ ] `shellcheck scripts/*.sh` is clean
+- [ ] `shellcheck -x scripts/*.sh scripts/lib/*.sh` is clean
 - [ ] `actionlint` is clean
 - [ ] SPDX license headers are present (`python3 scripts/add_license_header.py --path . --types sh,yml,yaml,py --check`)
 - [ ] No `Co-Authored-By` trailer in commit messages

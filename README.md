@@ -28,23 +28,40 @@ From `gst-plugin-webrtc` and `gst-plugin-webrtchttp`:
 
 ## Install
 
+Packages are built **once per distribution release**, not once for all of them.
+`gst-plugin-webrtc` compiles against the GStreamer headers it finds and enables
+the `v1_22` feature set unconditionally, so a binary built on one release can
+call symbols another does not have. Pick the package matching your system:
+
+| Your system | GStreamer | Package suffix |
+| --- | --- | --- |
+| Debian 12 | 1.22 | `~bookworm1` |
+| Debian 13 / Raspberry Pi OS (trixie) | 1.26 | `~trixie1` |
+| Ubuntu 24.04 | 1.24 | `~noble1` |
+| Ubuntu 26.04 | 1.28 | `~resolute1` |
+
+Ubuntu 22.04 is not supported: it ships GStreamer 1.20, below the 1.22 the
+plugins require.
+
 ### Debian / Ubuntu / Raspberry Pi OS
 
-Download the `.deb` matching your architecture from the
+Download the `.deb` for your release and architecture from the
 [latest release](https://github.com/goabonga/gst-plugins-rs-rpi/releases/latest):
 
 ```bash
-sudo apt install ./gst-plugins-rs-webrtc_<version>-1_arm64.deb
+sudo apt install ./gst-plugins-rs-webrtc_<version>-1~trixie1_arm64.deb
 ```
 
-The plugins land in `/usr/lib/<triplet>/gstreamer-1.0/` and GStreamer finds
-them automatically — no `GST_PLUGIN_PATH` needed.
+Install with `apt`, not `dpkg -i`: the dependencies are computed by
+`dpkg-shlibdeps` against that release, and `apt` resolves them. The plugins
+land in `/usr/lib/<triplet>/gstreamer-1.0/` and GStreamer finds them
+automatically -- no `GST_PLUGIN_PATH` needed.
 
 ### Ubuntu, from the PPA
 
 When the maintainer has configured Launchpad publishing (see
-[Publishing targets](#publishing-targets)), every release is also uploaded to
-a PPA:
+[Publishing targets](#publishing-targets)), the Ubuntu releases are also
+uploaded to a PPA:
 
 ```bash
 sudo add-apt-repository ppa:<owner>/<ppa>
@@ -53,17 +70,18 @@ sudo apt install gst-plugins-rs-webrtc
 
 ### Arch Linux
 
-Two AUR packages are published, pick one:
-
 ```bash
-paru -S gst-plugins-rs-webrtc-bin   # installs the prebuilt binaries
-paru -S gst-plugins-rs-webrtc       # compiles upstream locally
+paru -S gst-plugins-rs-webrtc       # compiles upstream locally -- preferred
+paru -S gst-plugins-rs-webrtc-bin   # repacks the Ubuntu 26.04 build
 ```
+
+Prefer the from-source package: Arch is rolling, and only a local build is
+guaranteed to match the GStreamer it currently ships.
 
 ### Any distribution (tarball)
 
 ```bash
-tar -xzf gst-plugins-rs-webrtc-<version>-<arch>.tar.gz -C /usr/local
+tar -xzf gst-plugins-rs-webrtc-<version>-<release>-<arch>.tar.gz -C /usr/local
 export GST_PLUGIN_PATH=/usr/local/lib/gstreamer-1.0
 ```
 
@@ -77,67 +95,56 @@ gst-inspect-1.0 webrtcsink
 
 ## Build it yourself
 
-Requirements: a Rust toolchain matching the upstream MSRV (1.92 for
-`gstreamer-1.28.x`), plus the GStreamer development headers:
+The pipeline does this in a container of each target release; to reproduce one
+of them locally, run the same two scripts inside that release. On a Debian 13
+machine, for `trixie`:
 
 ```bash
-sudo apt install pkg-config libgstreamer1.0-dev \
-  libgstreamer-plugins-base1.0-dev libgstreamer-plugins-bad1.0-dev \
-  libglib2.0-dev libssl-dev libsoup-3.0-dev libnice-dev
+sudo apt install pkg-config debhelper dpkg-dev \
+  libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+  libgstreamer-plugins-bad1.0-dev libglib2.0-dev libssl-dev \
+  libsoup-3.0-dev libnice-dev
+# Upstream needs rustc 1.92; no distribution packages one that new, so use
+# rustup rather than the apt toolchain.
 
-scripts/build-plugins.sh --upstream-tag gstreamer-1.28.6
-scripts/build-deb.sh --version 1.28.6 \
-  --tarball dist/gst-plugins-rs-webrtc-1.28.6-amd64.tar.gz
+scripts/build-plugins.sh --upstream-tag gstreamer-1.28.6 --codename trixie
+scripts/build-deb.sh --version 1.28.6 --codename trixie \
+  --tarball dist/gst-plugins-rs-webrtc-1.28.6-trixie-amd64.tar.gz
 ```
 
-Builds are always native; cross-compiling needs a full foreign-arch sysroot,
-so CI uses one runner per architecture instead.
+Or in one line, without touching your system:
+
+```bash
+docker run --rm -v "$PWD:/w" -w /w debian:trixie bash -c '...'
+```
+
+Builds are always native. Cross-compiling needs a full foreign-arch sysroot,
+which every earlier iteration of this pipeline broke on, so CI uses one runner
+per architecture.
 
 ## The pipeline
 
-Every run — pull request or release — goes through the same stages, in this
-order, defined once in [`pipeline.yml`](.github/workflows/pipeline.yml):
+There is one workflow, [`pipeline.yml`](.github/workflows/pipeline.yml). It runs
+daily on a cron, or by hand with the upstream tag to build. Each stage waits for
+the one before it; the matrices fan out inside a stage.
 
 | Stage | What it does |
 | --- | --- |
-| **checks** | `shellcheck`, `actionlint`, SPDX headers |
-| **version** | asks GitLab for the newest stable upstream tag |
-| **metadata** | renders and validates the Debian source package and the from-source PKGBUILD at that version |
-| **build** | compiles both architectures natively, builds the tarball and `.deb`, then installs the `.deb` through `apt` and inspects the elements |
+| **version** | asks GitLab for the newest stable upstream tag and decides whether it is already released here |
+| **checks** | `shellcheck`, `actionlint`, SPDX headers, packaging metadata parses |
+| **build** | 4 releases x 2 architectures in parallel, each in a container of its target release: compile, `.deb`, install through `apt`, inspect the elements |
+| **aur metadata** | renders both PKGBUILDs with the real checksums |
+| **github release** | tarballs, `.deb`s and `SHA256SUMS` |
+| **launchpad**, **aur** | only when the secrets are configured |
 
-Metadata comes before the build on purpose: a broken control file or PKGBUILD
-fails in about two minutes instead of after a twenty-minute arm64 compile. The
-build stage installs with `apt`, not `dpkg -i`, so it resolves the package's own
-declared dependencies — that is what caught `webrtcbin` missing from `Depends`.
+Building inside the target release is what makes the dependencies right:
+`dh_shlibdeps` resolves them against that release's own packages. Writing them
+by hand got it wrong twice -- once missing `gstreamer1.0-plugins-bad`, which
+made the plugins abort on load, and once naming `libsoup`/`libnice`/`libssl`,
+which the Rust crates link statically and no `.so` needs.
 
-[`release.yml`](.github/workflows/release.yml) runs that same pipeline and then
-adds **github release** followed by **launchpad** and **aur**, so nothing is
-ever published from a tree that would fail CI.
-
-## Versioning and releases
-
-Versions are not chosen here — a release is named after the upstream tag it was
-built from, so upstream `gstreamer-1.28.6` is published as `v1.28.6`.
-
-- [`upstream-watch`](.github/workflows/upstream-watch.yml) runs daily, compares
-  the newest stable upstream tag (GStreamer's even-minor convention) with the
-  newest release here, and calls the release pipeline when upstream moves ahead.
-- The release tag is created by the publish stage, so a failed build never
-  leaves behind a tag for a release that does not exist.
-- Pushing a `v*` tag or running `release` manually does the same thing for a
-  specific version.
-
-A push to `main` runs the pipeline but does **not** publish: a release is tied
-to an upstream version, not to a commit here.
-
-### Re-releasing after a packaging fix
-
-When the packaging is wrong but upstream has not moved, run `release` manually
-with a higher **revision**. Revision `1` is the plain `v1.28.6`; revision `2`
-publishes the same upstream code as `v1.28.6-2`, with `1.28.6-2` as the Debian
-version and `pkgrel=2` on the AUR — the meaning the Debian revision already
-carries. `upstream-watch` compares only the upstream part, so it will not
-mistake `v1.28.6-2` for a version upstream needs to catch up with.
+There is no pull-request trigger: a push is not validated, and a lint or
+packaging mistake surfaces at the next cron run or manual dispatch.
 
 ## Publishing targets
 
@@ -164,14 +171,11 @@ them; `LAUNCHPAD_SERIES` defaults to `noble` for that reason.
 ```
 scripts/      build, packaging and publishing steps, each runnable on its own
 packaging/
-  deb/        control template for the binary .deb
-  launchpad/  Debian source package uploaded to the PPA
+  debian/     debian/ tree, shared by the .deb build and the PPA upload
   aur/        PKGBUILD templates for both AUR packages
 .github/workflows/
-  pipeline.yml        checks -> version -> metadata -> build (reusable)
-  ci.yml              runs the pipeline on pull requests
-  release.yml         runs the pipeline, then publishes
-  upstream-watch.yml  daily upstream check, calls release.yml
+  pipeline.yml            the pipeline: cron or manual
+  dependabot-rewrite.yml  signs and renames Dependabot's commits
 ```
 
 ## Contributing

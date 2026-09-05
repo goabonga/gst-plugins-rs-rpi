@@ -37,7 +37,7 @@ Before pushing, make sure your change passes the same gates the `ci` workflow
 runs:
 
 ```bash
-shellcheck scripts/*.sh
+shellcheck -x scripts/*.sh scripts/lib/*.sh
 actionlint
 python3 scripts/add_license_header.py --path . --types sh,yml,yaml --check
 ```
