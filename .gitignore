@@ -1,0 +1,6 @@
+# Build workspace: upstream checkout and generated artifacts.
+/build/
+/dist/
+*.deb
+*.tar.gz
+*.tar.xz
