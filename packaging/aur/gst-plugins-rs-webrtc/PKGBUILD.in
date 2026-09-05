@@ -1,0 +1,42 @@
+# Maintainer: Chris <goabonga@pm.me>
+#
+# Rendered from packaging/aur/gst-plugins-rs-webrtc/PKGBUILD.in by
+# scripts/publish-aur.sh -- edit the template, not the published PKGBUILD.
+
+pkgname=gst-plugins-rs-webrtc
+pkgver=@VERSION@
+pkgrel=@PKGREL@
+pkgdesc='GStreamer WebRTC elements from gst-plugins-rs (webrtcsrc, webrtcsink, whipsink, whepsrc)'
+arch=('x86_64' 'aarch64')
+url='https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs'
+license=('MPL-2.0')
+depends=('gstreamer' 'gst-plugins-base-libs' 'gst-plugins-bad-libs' 'glib2' 'libsoup3' 'libnice' 'openssl')
+# Upstream's .cargo/config.toml sets git-fetch-with-cli, and the workspace
+# pulls some gtk-rs crates straight from git, so git is a real build dep.
+# pkgconf comes from base-devel and is intentionally not listed.
+makedepends=('rust' 'cargo' 'git')
+provides=('gst-plugin-webrtc' 'gst-plugin-webrtchttp')
+conflicts=('gst-plugins-rs-webrtc-bin')
+options=('!lto')
+source=("$pkgname-$pkgver.tar.gz::https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs/-/archive/gstreamer-$pkgver/gst-plugins-rs-gstreamer-$pkgver.tar.gz")
+sha256sums=('@SHA256_SRC@')
+
+_srcdir="gst-plugins-rs-gstreamer-$pkgver"
+
+prepare() {
+  cd "$_srcdir"
+  export RUSTUP_TOOLCHAIN=stable
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/^host: //p')"
+}
+
+build() {
+  cd "$_srcdir"
+  export RUSTUP_TOOLCHAIN=stable
+  export CARGO_TARGET_DIR=target
+  cargo build --frozen --release -p gst-plugin-webrtc -p gst-plugin-webrtchttp
+}
+
+package() {
+  cd "$_srcdir"
+  install -Dm755 -t "$pkgdir/usr/lib/gstreamer-1.0" target/release/*.so
+}

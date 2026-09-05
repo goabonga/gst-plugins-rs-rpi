@@ -1,0 +1,24 @@
+# Maintainer: Chris <goabonga@pm.me>
+#
+# Rendered from packaging/aur/gst-plugins-rs-webrtc-bin/PKGBUILD.in by
+# scripts/publish-aur.sh -- edit the template, not the published PKGBUILD.
+
+pkgname=gst-plugins-rs-webrtc-bin
+pkgver=@VERSION@
+pkgrel=@PKGREL@
+pkgdesc='GStreamer WebRTC elements from gst-plugins-rs (prebuilt binaries)'
+arch=('x86_64' 'aarch64')
+url='https://github.com/goabonga/gst-plugins-rs-rpi'
+license=('MPL-2.0')
+depends=('gstreamer' 'gst-plugins-base-libs' 'gst-plugins-bad-libs' 'glib2' 'libsoup3' 'libnice' 'openssl')
+provides=("gst-plugins-rs-webrtc=$pkgver" 'gst-plugin-webrtc' 'gst-plugin-webrtchttp')
+conflicts=('gst-plugins-rs-webrtc')
+_url_base="https://github.com/goabonga/gst-plugins-rs-rpi/releases/download/v$pkgver"
+source_x86_64=("$pkgname-$pkgver-x86_64.tar.gz::$_url_base/gst-plugins-rs-webrtc-$pkgver-amd64.tar.gz")
+source_aarch64=("$pkgname-$pkgver-aarch64.tar.gz::$_url_base/gst-plugins-rs-webrtc-$pkgver-arm64.tar.gz")
+sha256sums_x86_64=('@SHA256_AMD64@')
+sha256sums_aarch64=('@SHA256_ARM64@')
+
+package() {
+  install -Dm755 -t "$pkgdir/usr/lib/gstreamer-1.0" lib/gstreamer-1.0/*.so
+}
